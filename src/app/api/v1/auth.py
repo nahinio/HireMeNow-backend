@@ -13,7 +13,17 @@ from app.core.security import (
 from app.db.engine import get_async_session
 from app.models.enums import UserRole
 from app.models.user import ClientProfile, FreelancerProfile, User
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    PasswordResetConfirm,
+    PasswordResetConfirmResponse,
+    PasswordResetRequest,
+    PasswordResetRequestResponse,
+    RegisterRequest,
+    TokenResponse,
+    UserResponse,
+)
+from app.services.password_reset import request_password_reset, reset_password_with_token
 from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -101,6 +111,12 @@ async def login(
             detail="Account has been banned",
         )
 
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been deleted",
+        )
+
     return _issue_token(user)
 
 
@@ -130,6 +146,24 @@ async def admin_login(
         )
 
     return _issue_token(user)
+
+
+@router.post("/forgot-password", response_model=PasswordResetRequestResponse)
+async def forgot_password(
+    payload: PasswordResetRequest,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> PasswordResetRequestResponse:
+    message, reset_token = await request_password_reset(session, payload.email.lower())
+    return PasswordResetRequestResponse(message=message, reset_token=reset_token)
+
+
+@router.post("/reset-password", response_model=PasswordResetConfirmResponse)
+async def reset_password(
+    payload: PasswordResetConfirm,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> PasswordResetConfirmResponse:
+    await reset_password_with_token(session, payload.token, payload.new_password)
+    return PasswordResetConfirmResponse()
 
 
 @router.get("/me", response_model=UserResponse)

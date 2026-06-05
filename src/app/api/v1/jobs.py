@@ -3,11 +3,12 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user, require_client, require_freelancer
+from app.core.config import get_settings
+from app.core.security import get_current_user, get_optional_current_user, require_client, require_freelancer
 from app.db.engine import get_async_session
 from app.models.enums import ApplicationStatus, ConversationPhase, JobStatus
 from app.models.job import Application, Job, JobRequiredSkill
@@ -16,22 +17,23 @@ from app.models.skill import Skill, SkillBadge
 from app.models.user import FreelancerProfile, User
 from app.schemas.job import (
     ApplicantListResponse,
+    ApplicantResponse,
     ApplicationResponse,
     JobCreate,
     JobListResponse,
     JobResponse,
+    SelectApplicantRequest,
+    SelectApplicantResponse,
     build_applicant_response,
 )
 from app.schemas.skill import SkillResponse
+from app.schemas.upload import FileUploadResponse
+from app.services.applications import select_applicant_for_job
+from app.services.uploads import delete_upload_if_local, save_image_upload
+from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-SORT_COLUMNS = {
-    "quiz_score_snapshot": Application.quiz_score_snapshot,
-    "avg_rating": FreelancerProfile.avg_rating,
-    "applied_at": Application.applied_at,
-}
 
 
 async def _get_job_required_skills(
@@ -52,7 +54,18 @@ async def _build_job_response(session: AsyncSession, job: Job) -> JobResponse:
         id=job.id,
         client_id=job.client_id,
         title=job.title,
+        thumbnail_url=job.thumbnail_url,
         description=job.description,
+        requirements_education=job.requirements_education,
+        requirements_experience=job.requirements_experience,
+        requirements_additional=job.requirements_additional,
+        responsibilities=job.responsibilities,
+        about_role=job.about_role,
+        salary_amount=job.salary_amount,
+        salary_negotiable=job.salary_negotiable,
+        other_benefits=job.other_benefits,
+        company_name=job.company_name,
+        company_description=job.company_description,
         deliverables=job.deliverables,
         budget=job.budget,
         timeline=job.timeline,
@@ -101,6 +114,33 @@ async def _verify_job_party(
     )
 
 
+async def _can_view_job(
+    session: AsyncSession, job: Job, user: User | None
+) -> bool:
+    if job.status == JobStatus.open:
+        return True
+    if user is None:
+        return False
+    if job.client_id == user.id:
+        return True
+
+    profile_result = await session.execute(
+        select(FreelancerProfile).where(FreelancerProfile.user_id == user.id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if profile is None:
+        return False
+
+    accepted_result = await session.execute(
+        select(Application.id).where(
+            Application.job_id == job.id,
+            Application.freelancer_id == profile.id,
+            Application.status == ApplicationStatus.accepted,
+        )
+    )
+    return accepted_result.scalar_one_or_none() is not None
+
+
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(
     payload: JobCreate,
@@ -120,13 +160,33 @@ async def create_job(
             detail="One or more skill IDs are invalid or inactive",
         )
 
+    description = payload.description or payload.about_role
+    deliverables = payload.deliverables or payload.responsibilities
+    budget = (
+        payload.budget
+        if payload.budget is not None
+        else (payload.salary_amount or Decimal("0"))
+    )
+    timeline = payload.timeline or "Flexible"
+
     job = Job(
         client_id=current_user.id,
         title=payload.title,
-        description=payload.description,
-        deliverables=payload.deliverables,
-        budget=payload.budget,
-        timeline=payload.timeline,
+        thumbnail_url=payload.thumbnail_url,
+        description=description,
+        requirements_education=payload.requirements_education,
+        requirements_experience=payload.requirements_experience,
+        requirements_additional=payload.requirements_additional,
+        responsibilities=payload.responsibilities,
+        about_role=payload.about_role,
+        salary_amount=payload.salary_amount,
+        salary_negotiable=payload.salary_negotiable,
+        other_benefits=payload.other_benefits,
+        company_name=payload.company_name,
+        company_description=payload.company_description,
+        deliverables=deliverables,
+        budget=budget,
+        timeline=timeline,
     )
     session.add(job)
     await session.flush()
@@ -140,18 +200,93 @@ async def create_job(
 @router.get("", response_model=JobListResponse)
 async def list_jobs(
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    q: str | None = Query(default=None, description="Search job title"),
+    skill_id: UUID | None = Query(default=None),
+    company_name: str | None = Query(default=None),
+    status_filter: JobStatus | None = Query(default=JobStatus.open, alias="status"),
+    min_salary: Decimal | None = Query(default=None, ge=0),
+    max_salary: Decimal | None = Query(default=None, ge=0),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> JobListResponse:
-    count_result = await session.execute(
-        select(func.count()).select_from(Job).where(Job.status == JobStatus.open)
+    query = (
+        select(Job)
+        .join(User, Job.client_id == User.id)
+        .where(
+            User.is_deleted.is_(False),
+            User.is_banned.is_(False),
+        )
     )
-    total = int(count_result.scalar_one())
+    count_query = (
+        select(func.count())
+        .select_from(Job)
+        .join(User, Job.client_id == User.id)
+        .where(
+            User.is_deleted.is_(False),
+            User.is_banned.is_(False),
+        )
+    )
+
+    if status_filter is not None:
+        query = query.where(Job.status == status_filter)
+        count_query = count_query.where(Job.status == status_filter)
+
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(Job.title.ilike(pattern))
+        count_query = count_query.where(Job.title.ilike(pattern))
+    if company_name:
+        pattern = f"%{company_name.strip()}%"
+        query = query.where(Job.company_name.ilike(pattern))
+        count_query = count_query.where(Job.company_name.ilike(pattern))
+    if skill_id is not None:
+        query = query.join(JobRequiredSkill).where(JobRequiredSkill.skill_id == skill_id)
+        count_query = count_query.join(JobRequiredSkill).where(
+            JobRequiredSkill.skill_id == skill_id
+        )
+    if min_salary is not None:
+        salary_clause = (Job.salary_negotiable.is_(True)) | (Job.salary_amount >= min_salary)
+        query = query.where(salary_clause)
+        count_query = count_query.where(salary_clause)
+    if max_salary is not None:
+        salary_clause = Job.salary_negotiable.is_(True) | (
+            Job.salary_amount.is_not(None) & (Job.salary_amount <= max_salary)
+        )
+        query = query.where(salary_clause)
+        count_query = count_query.where(salary_clause)
+
+    total = int((await session.execute(count_query)).scalar_one())
 
     result = await session.execute(
-        select(Job)
-        .where(Job.status == JobStatus.open)
-        .order_by(Job.posted_at.desc())
+        query.order_by(Job.posted_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    jobs = result.scalars().unique().all()
+    items = [await _build_job_response(session, job) for job in jobs]
+    return JobListResponse(items=items, page=page, limit=limit, total=total)
+
+
+@router.get("/mine", response_model=JobListResponse)
+async def list_my_jobs(
+    current_user: Annotated[User, Depends(require_client)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    status_filter: JobStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JobListResponse:
+    query = select(Job).where(Job.client_id == current_user.id)
+    count_query = (
+        select(func.count()).select_from(Job).where(Job.client_id == current_user.id)
+    )
+
+    if status_filter is not None:
+        query = query.where(Job.status == status_filter)
+        count_query = count_query.where(Job.status == status_filter)
+
+    total = int((await session.execute(count_query)).scalar_one())
+    result = await session.execute(
+        query.order_by(Job.posted_at.desc())
         .offset((page - 1) * limit)
         .limit(limit)
     )
@@ -160,16 +295,64 @@ async def list_jobs(
     return JobListResponse(items=items, page=page, limit=limit, total=total)
 
 
+@router.post("/thumbnail", response_model=FileUploadResponse)
+async def upload_job_thumbnail_draft(
+    current_user: Annotated[User, Depends(require_client)],
+    file: Annotated[UploadFile, File(...)],
+) -> FileUploadResponse:
+    settings = get_settings()
+    url = await save_image_upload(
+        file,
+        owner_id=current_user.id,
+        category="jobs/thumbnails",
+        max_bytes=settings.MAX_IMAGE_SIZE_BYTES,
+    )
+    return FileUploadResponse(url=url)
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: UUID,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User | None, Depends(get_optional_current_user)] = None,
 ) -> JobResponse:
+    result = await session.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None or not await _can_view_job(session, job, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return await _build_job_response(session, job)
+
+
+@router.post("/{job_id}/thumbnail", response_model=FileUploadResponse)
+async def upload_job_thumbnail(
+    job_id: UUID,
+    current_user: Annotated[User, Depends(require_client)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    file: Annotated[UploadFile, File(...)],
+) -> FileUploadResponse:
+    settings = get_settings()
     result = await session.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return await _build_job_response(session, job)
+    if job.client_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this job",
+        )
+
+    url = await save_image_upload(
+        file,
+        owner_id=current_user.id,
+        category=f"jobs/{job_id}/thumbnail",
+        max_bytes=settings.MAX_IMAGE_SIZE_BYTES,
+    )
+    delete_upload_if_local(job.thumbnail_url)
+    job.thumbnail_url = url
+    job.updated_at = datetime.now(timezone.utc)
+    session.add(job)
+    await session.refresh(job)
+    return FileUploadResponse(url=url)
 
 
 @router.post("/{job_id}/apply", response_model=ApplicationResponse, status_code=status.HTTP_201_CREATED)
@@ -236,13 +419,37 @@ async def apply_to_job(
     return application
 
 
+@router.post("/{job_id}/select", response_model=SelectApplicantResponse)
+async def select_applicant(
+    job_id: UUID,
+    payload: SelectApplicantRequest,
+    current_user: Annotated[User, Depends(require_client)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> SelectApplicantResponse:
+    job_result = await session.execute(select(Job).where(Job.id == job_id))
+    job = job_result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    application, conversation, message = await select_applicant_for_job(
+        session,
+        job=job,
+        client=current_user,
+        application_id=payload.application_id,
+    )
+    return SelectApplicantResponse(
+        application_id=application.id,
+        status=application.status,
+        conversation=conversation,
+        message=message,
+    )
+
+
 @router.get("/{job_id}/applicants", response_model=ApplicantListResponse)
 async def list_applicants(
     job_id: UUID,
     current_user: Annotated[User, Depends(require_client)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    sort_by: str = Query(default="applied_at"),
-    order: str = Query(default="desc"),
 ) -> ApplicantListResponse:
     job_result = await session.execute(select(Job).where(Job.id == job_id))
     job = job_result.scalar_one_or_none()
@@ -254,46 +461,45 @@ async def list_applicants(
             detail="Not authorized to view applicants",
         )
 
-    if sort_by not in SORT_COLUMNS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid sort_by value: {sort_by}",
-        )
-
-    sort_column = SORT_COLUMNS[sort_by]
-    if order == "desc":
-        order_clause = sort_column.desc()
-    elif order == "asc":
-        order_clause = sort_column.asc()
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid order value: {order}",
-        )
-
     result = await session.execute(
         select(Application, FreelancerProfile, User)
         .join(FreelancerProfile, Application.freelancer_id == FreelancerProfile.id)
         .join(User, FreelancerProfile.user_id == User.id)
-        .where(Application.job_id == job_id, User.is_banned.is_(False))
-        .order_by(order_clause)
+        .where(
+            Application.job_id == job_id,
+            User.is_banned.is_(False),
+            User.is_deleted.is_(False),
+        )
     )
 
-    items = [
-        build_applicant_response(
-            application_id=application.id,
-            applied_at=application.applied_at,
-            quiz_score_snapshot=application.quiz_score_snapshot,
-            status=application.status,
-            email=user.email,
-            display_name=profile.display_name,
+    ranked: list[tuple[Decimal, ApplicantResponse]] = []
+    for application, profile, user in result.all():
+        composite_score, no_review_experience = compute_composite_score(
+            quiz_score=application.quiz_score_snapshot,
             avg_rating=profile.avg_rating,
             review_count=profile.review_count,
-            available_for_work=profile.available_for_work,
         )
-        for application, profile, user in result.all()
-    ]
-    return ApplicantListResponse(items=items)
+        ranked.append(
+            (
+                composite_score,
+                build_applicant_response(
+                    application_id=application.id,
+                    applied_at=application.applied_at,
+                    quiz_score_snapshot=application.quiz_score_snapshot,
+                    composite_score=composite_score,
+                    status=application.status,
+                    email=user.email,
+                    display_name=profile.display_name,
+                    avg_rating=profile.avg_rating,
+                    review_count=profile.review_count,
+                    available_for_work=profile.available_for_work,
+                    no_review_experience=no_review_experience,
+                ),
+            )
+        )
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ApplicantListResponse(items=[item[1] for item in ranked])
 
 
 @router.post("/{job_id}/complete", status_code=status.HTTP_200_OK)
@@ -307,7 +513,7 @@ async def signal_completion(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
-    if job.status not in (JobStatus.open, JobStatus.pending_confirmation):
+    if job.status not in (JobStatus.filled, JobStatus.pending_confirmation):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Cannot signal completion for job with status {enum_to_str(job.status)}",

@@ -3,20 +3,23 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select, update
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.security import require_admin
 from app.db.engine import get_async_session
 from app.models.enums import (
     ApplicationStatus,
-    DisputeStatus,
     JobStatus,
+    ReportStatus,
     UserRole,
 )
-from app.models.job import Application, Job
-from app.models.review import Dispute, Review
+from app.models.course import Course
+from app.models.job import Application, Job, JobRequiredSkill
+from app.models.report import UserReport
+from app.models.review import Review
 from app.models.skill import AnswerOption, Question, Quiz, Skill
 from app.models.user import (
     ClientProfile,
@@ -24,12 +27,18 @@ from app.models.user import (
     TokenBlocklist,
     User,
 )
+from app.schemas.course import CourseCreate, CourseListResponse, CourseResponse, CourseUpdate
+from app.schemas.admin import AdminJobApplicantsResponse, AdminJobListResponse, AdminJobSummary
+from app.schemas.job import ApplicantListResponse, JobResponse, build_applicant_response
+from app.schemas.report import (
+    UserReportListResponse,
+    UserReportResolveRequest,
+    UserReportResolveResponse,
+    UserReportResponse,
+)
 from app.schemas.review import (
     BanRequest,
     BanResponse,
-    DisputeListResponse,
-    DisputeResolveRequest,
-    DisputeResponse,
     ReviewDeleteResponse,
 )
 from app.schemas.skill import (
@@ -39,13 +48,104 @@ from app.schemas.skill import (
     QuestionResponse,
     QuizCreate,
     QuizResponse,
+    QuizUpdate,
     SkillCreate,
     SkillResponse,
+    SkillWithQuizCreate,
+    SkillWithQuizResponse,
+)
+from app.services.courses import (
+    ensure_can_remove_course,
+    ensure_skill_has_minimum_courses,
 )
 from app.services.reviews import recalculate_profile_ratings, update_profile_ratings_for_user
+from app.services.reports import resolve_user_report
+from app.schemas.upload import FileUploadResponse
+from app.services.skills import create_skill_with_quiz
+from app.services.uploads import delete_upload_if_local, save_image_upload
+from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+async def _build_admin_job_response(session: AsyncSession, job: Job) -> JobResponse:
+    skills_result = await session.execute(
+        select(Skill)
+        .join(JobRequiredSkill, JobRequiredSkill.skill_id == Skill.id)
+        .where(JobRequiredSkill.job_id == job.id)
+    )
+    required_skills = [
+        SkillResponse.model_validate(skill) for skill in skills_result.scalars().all()
+    ]
+    return JobResponse(
+        id=job.id,
+        client_id=job.client_id,
+        title=job.title,
+        thumbnail_url=job.thumbnail_url,
+        description=job.description,
+        requirements_education=job.requirements_education,
+        requirements_experience=job.requirements_experience,
+        requirements_additional=job.requirements_additional,
+        responsibilities=job.responsibilities,
+        about_role=job.about_role,
+        salary_amount=job.salary_amount,
+        salary_negotiable=job.salary_negotiable,
+        other_benefits=job.other_benefits,
+        company_name=job.company_name,
+        company_description=job.company_description,
+        deliverables=job.deliverables,
+        budget=job.budget,
+        timeline=job.timeline,
+        status=job.status,
+        posted_at=job.posted_at,
+        updated_at=job.updated_at,
+        required_skills=required_skills,
+    )
+
+
+async def _build_admin_applicant_list(
+    session: AsyncSession, job_id: UUID
+) -> ApplicantListResponse:
+    result = await session.execute(
+        select(Application, FreelancerProfile, User)
+        .join(FreelancerProfile, Application.freelancer_id == FreelancerProfile.id)
+        .join(User, FreelancerProfile.user_id == User.id)
+        .where(
+            Application.job_id == job_id,
+            User.is_banned.is_(False),
+            User.is_deleted.is_(False),
+        )
+    )
+
+    ranked: list[tuple[Decimal, object]] = []
+    for application, profile, user in result.all():
+        composite_score, no_review_experience = compute_composite_score(
+            quiz_score=application.quiz_score_snapshot,
+            avg_rating=profile.avg_rating,
+            review_count=profile.review_count,
+        )
+        ranked.append(
+            (
+                composite_score,
+                build_applicant_response(
+                    application_id=application.id,
+                    applied_at=application.applied_at,
+                    quiz_score_snapshot=application.quiz_score_snapshot,
+                    composite_score=composite_score,
+                    status=application.status,
+                    email=user.email,
+                    display_name=profile.display_name,
+                    avg_rating=profile.avg_rating,
+                    review_count=profile.review_count,
+                    available_for_work=profile.available_for_work,
+                    no_review_experience=no_review_experience,
+                ),
+            )
+        )
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ApplicantListResponse(items=[item[1] for item in ranked])
 
 
 @router.post("/skills", response_model=SkillResponse, status_code=status.HTTP_201_CREATED)
@@ -65,6 +165,7 @@ async def create_skill(
 
     skill = Skill(
         name=payload.name,
+        description=payload.description,
         is_active=payload.is_active,
         created_by=current_user.id,
     )
@@ -72,6 +173,23 @@ async def create_skill(
     await session.flush()
     await session.refresh(skill)
     return skill
+
+
+@router.post(
+    "/skills/with-quiz",
+    response_model=SkillWithQuizResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_skill_with_quiz_endpoint(
+    payload: SkillWithQuizCreate,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> SkillWithQuizResponse:
+    return await create_skill_with_quiz(
+        session,
+        payload=payload,
+        created_by=current_user.id,
+    )
 
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=status.HTTP_201_CREATED)
@@ -94,6 +212,9 @@ async def create_quiz(
             detail="Quiz already exists for this skill",
         )
 
+    if payload.published:
+        await ensure_skill_has_minimum_courses(session, payload.skill_id)
+
     quiz = Quiz(
         skill_id=payload.skill_id,
         pass_threshold=payload.pass_threshold,
@@ -108,6 +229,191 @@ async def create_quiz(
         pass_threshold=quiz.pass_threshold,
         published=quiz.published,
     )
+
+
+@router.patch("/quizzes/{quiz_id}", response_model=QuizResponse)
+async def update_quiz(
+    quiz_id: UUID,
+    payload: QuizUpdate,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> QuizResponse:
+    quiz_result = await session.execute(
+        select(Quiz, Skill).join(Skill, Quiz.skill_id == Skill.id).where(Quiz.id == quiz_id)
+    )
+    row = quiz_result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+
+    quiz, skill = row
+    if payload.pass_threshold is not None:
+        quiz.pass_threshold = payload.pass_threshold
+    if payload.published is not None:
+        if payload.published and not quiz.published:
+            await ensure_skill_has_minimum_courses(session, quiz.skill_id)
+        quiz.published = payload.published
+
+    session.add(quiz)
+    await session.refresh(quiz)
+    return QuizResponse(
+        id=quiz.id,
+        skill_id=quiz.skill_id,
+        skill_name=skill.name,
+        pass_threshold=quiz.pass_threshold,
+        published=quiz.published,
+    )
+
+
+@router.post("/courses/thumbnail", response_model=FileUploadResponse)
+async def upload_course_thumbnail(
+    current_user: Annotated[User, Depends(require_admin)],
+    file: Annotated[UploadFile, File(...)],
+) -> FileUploadResponse:
+    settings = get_settings()
+    url = await save_image_upload(
+        file,
+        owner_id=current_user.id,
+        category="courses/thumbnails",
+        max_bytes=settings.MAX_IMAGE_SIZE_BYTES,
+    )
+    return FileUploadResponse(url=url)
+
+
+@router.post("/courses", response_model=CourseResponse, status_code=status.HTTP_201_CREATED)
+async def create_course(
+    payload: CourseCreate,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> CourseResponse:
+    skill_result = await session.execute(select(Skill).where(Skill.id == payload.skill_id))
+    skill = skill_result.scalar_one_or_none()
+    if skill is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill not found")
+
+    course = Course(
+        skill_id=payload.skill_id,
+        name=payload.name,
+        thumbnail_url=payload.thumbnail_url,
+        link=payload.link,
+        is_active=payload.is_active,
+    )
+    session.add(course)
+    await session.flush()
+    await session.refresh(course)
+    return CourseResponse(
+        id=course.id,
+        skill_id=course.skill_id,
+        skill_name=skill.name,
+        name=course.name,
+        thumbnail_url=course.thumbnail_url,
+        link=course.link,
+        is_active=course.is_active,
+        created_at=course.created_at,
+    )
+
+
+@router.get("/courses", response_model=CourseListResponse)
+async def list_admin_courses(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    skill_id: UUID | None = Query(default=None),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> CourseListResponse:
+    query = select(Course, Skill).join(Skill, Course.skill_id == Skill.id)
+    count_query = select(func.count()).select_from(Course)
+
+    if skill_id is not None:
+        query = query.where(Course.skill_id == skill_id)
+        count_query = count_query.where(Course.skill_id == skill_id)
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(Course.name.ilike(pattern))
+        count_query = count_query.where(Course.name.ilike(pattern))
+
+    total = int((await session.execute(count_query)).scalar_one())
+    result = await session.execute(
+        query.order_by(Skill.name.asc(), Course.name.asc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    items = [
+        CourseResponse(
+            id=course.id,
+            skill_id=course.skill_id,
+            skill_name=skill.name,
+            name=course.name,
+            thumbnail_url=course.thumbnail_url,
+            link=course.link,
+            is_active=course.is_active,
+            created_at=course.created_at,
+        )
+        for course, skill in result.all()
+    ]
+    return CourseListResponse(items=items, page=page, limit=limit, total=total)
+
+
+@router.patch("/courses/{course_id}", response_model=CourseResponse)
+async def update_course(
+    course_id: UUID,
+    payload: CourseUpdate,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> CourseResponse:
+    result = await session.execute(
+        select(Course, Skill).join(Skill, Course.skill_id == Skill.id).where(Course.id == course_id)
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+
+    course, skill = row
+    was_active = course.is_active
+
+    if payload.name is not None:
+        course.name = payload.name
+    if payload.thumbnail_url is not None:
+        if course.thumbnail_url and course.thumbnail_url != payload.thumbnail_url:
+            delete_upload_if_local(course.thumbnail_url)
+        course.thumbnail_url = payload.thumbnail_url
+    if payload.link is not None:
+        course.link = payload.link
+    if payload.is_active is not None:
+        if was_active and not payload.is_active:
+            await ensure_can_remove_course(session, course)
+        course.is_active = payload.is_active
+
+    session.add(course)
+    await session.refresh(course)
+    return CourseResponse(
+        id=course.id,
+        skill_id=course.skill_id,
+        skill_name=skill.name,
+        name=course.name,
+        thumbnail_url=course.thumbnail_url,
+        link=course.link,
+        is_active=course.is_active,
+        created_at=course.created_at,
+    )
+
+
+@router.delete("/courses/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_course(
+    course_id: UUID,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> None:
+    result = await session.execute(select(Course).where(Course.id == course_id))
+    course = result.scalar_one_or_none()
+    if course is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+
+    if course.is_active:
+        await ensure_can_remove_course(session, course)
+
+    delete_upload_if_local(course.thumbnail_url)
+    await session.delete(course)
 
 
 @router.post(
@@ -177,70 +483,6 @@ async def create_answer_option(
     await session.flush()
     await session.refresh(option)
     return option
-
-
-@router.get("/disputes", response_model=DisputeListResponse)
-async def list_disputes(
-    current_user: Annotated[User, Depends(require_admin)],
-    session: Annotated[AsyncSession, Depends(get_async_session)],
-    status_filter: DisputeStatus | None = Query(default=None, alias="status"),
-    page: int = Query(default=1, ge=1),
-    limit: int = Query(default=20, ge=1, le=100),
-) -> DisputeListResponse:
-    query = select(Dispute)
-    count_query = select(func.count()).select_from(Dispute)
-
-    if status_filter is not None:
-        query = query.where(Dispute.status == status_filter)
-        count_query = count_query.where(Dispute.status == status_filter)
-
-    total_result = await session.execute(count_query)
-    total = int(total_result.scalar_one())
-
-    result = await session.execute(
-        query.order_by(Dispute.created_at.desc()).offset((page - 1) * limit).limit(limit)
-    )
-    items = result.scalars().all()
-    return DisputeListResponse(
-        items=[DisputeResponse.model_validate(item) for item in items],
-        page=page,
-        limit=limit,
-        total=total,
-    )
-
-
-@router.patch("/disputes/{dispute_id}", response_model=DisputeResponse)
-async def resolve_dispute(
-    dispute_id: UUID,
-    payload: DisputeResolveRequest,
-    current_user: Annotated[User, Depends(require_admin)],
-    session: Annotated[AsyncSession, Depends(get_async_session)],
-) -> Dispute:
-    result = await session.execute(select(Dispute).where(Dispute.id == dispute_id))
-    dispute = result.scalar_one_or_none()
-    if dispute is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispute not found")
-
-    if payload.status is not None:
-        dispute.status = payload.status
-    if payload.resolution_notes is not None:
-        dispute.description = (
-            f"{dispute.description}\n\nResolution: {payload.resolution_notes}"
-        )
-
-    dispute.resolved_by = current_user.id
-    dispute.resolved_at = datetime.now(timezone.utc)
-    session.add(dispute)
-
-    if payload.new_job_status is not None:
-        job_result = await session.execute(select(Job).where(Job.id == dispute.job_id))
-        job = job_result.scalar_one()
-        job.status = payload.new_job_status
-        job.updated_at = datetime.now(timezone.utc)
-        session.add(job)
-
-    await session.refresh(dispute)
-    return dispute
 
 
 @router.delete("/reviews/{review_id}", response_model=ReviewDeleteResponse)
@@ -336,3 +578,119 @@ async def ban_user(
         jobs_closed=jobs_closed,
         applications_canceled=applications_canceled,
     )
+
+
+@router.get("/reports", response_model=UserReportListResponse)
+async def list_reports(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    status_filter: ReportStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> UserReportListResponse:
+    query = select(UserReport)
+    count_query = select(func.count()).select_from(UserReport)
+
+    if status_filter is not None:
+        query = query.where(UserReport.status == status_filter)
+        count_query = count_query.where(UserReport.status == status_filter)
+
+    total = int((await session.execute(count_query)).scalar_one())
+    result = await session.execute(
+        query.order_by(UserReport.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    items = [UserReportResponse.model_validate(item) for item in result.scalars().all()]
+    return UserReportListResponse(items=items, page=page, limit=limit, total=total)
+
+
+@router.patch("/reports/{report_id}", response_model=UserReportResolveResponse)
+async def resolve_report(
+    report_id: UUID,
+    payload: UserReportResolveRequest,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> UserReportResolveResponse:
+    report, deleted_at = await resolve_user_report(
+        session,
+        report_id=report_id,
+        admin=current_user,
+        status=payload.status,
+    )
+    return UserReportResolveResponse(
+        report=UserReportResponse.model_validate(report),
+        reported_user_deleted_at=deleted_at,
+    )
+
+
+@router.get("/jobs", response_model=AdminJobListResponse)
+async def list_all_jobs(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    q: str | None = Query(default=None),
+    status_filter: JobStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> AdminJobListResponse:
+    query = select(Job).join(User, Job.client_id == User.id)
+    count_query = select(func.count()).select_from(Job).join(User, Job.client_id == User.id)
+
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(Job.title.ilike(pattern))
+        count_query = count_query.where(Job.title.ilike(pattern))
+    if status_filter is not None:
+        query = query.where(Job.status == status_filter)
+        count_query = count_query.where(Job.status == status_filter)
+
+    total = int((await session.execute(count_query)).scalar_one())
+    result = await session.execute(
+        query.order_by(Job.posted_at.desc()).offset((page - 1) * limit).limit(limit)
+    )
+    jobs = result.scalars().unique().all()
+
+    items: list[AdminJobSummary] = []
+    for job in jobs:
+        counts_result = await session.execute(
+            select(
+                func.count(Application.id),
+                func.coalesce(
+                    func.sum(
+                        case((Application.status == ApplicationStatus.pending, 1), else_=0)
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case((Application.status == ApplicationStatus.accepted, 1), else_=0)
+                    ),
+                    0,
+                ),
+            ).where(Application.job_id == job.id)
+        )
+        application_count, pending_count, accepted_count = counts_result.one()
+        items.append(
+            AdminJobSummary(
+                job=await _build_admin_job_response(session, job),
+                application_count=int(application_count),
+                pending_count=int(pending_count),
+                accepted_count=int(accepted_count),
+            )
+        )
+
+    return AdminJobListResponse(items=items, page=page, limit=limit, total=total)
+
+
+@router.get("/jobs/{job_id}/applicants", response_model=AdminJobApplicantsResponse)
+async def list_job_applicants(
+    job_id: UUID,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> AdminJobApplicantsResponse:
+    job_result = await session.execute(select(Job).where(Job.id == job_id))
+    if job_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    applicants = await _build_admin_applicant_list(session, job_id)
+    return AdminJobApplicantsResponse(job_id=job_id, applicants=applicants)

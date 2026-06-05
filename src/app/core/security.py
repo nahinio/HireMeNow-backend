@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
@@ -25,6 +27,18 @@ def hash_password(plain: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
+
+
+def generate_password_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_password_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def verify_password_reset_token(token: str, token_hash: str) -> bool:
+    return hash_password_reset_token(token) == token_hash
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -95,6 +109,42 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account has been banned",
         )
+
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been deleted",
+        )
+
+    return user
+
+
+async def get_optional_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> User | None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except HTTPException:
+        return None
+
+    user_id = payload.get("sub")
+    if user_id is None:
+        return None
+
+    result = await session.execute(select(User).where(User.id == UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if user is None or user.is_banned or user.is_deleted:
+        return None
+
+    blocklist_result = await session.execute(
+        select(TokenBlocklist).where(TokenBlocklist.user_id == user.id)
+    )
+    if blocklist_result.scalar_one_or_none() is not None:
+        return None
 
     return user
 

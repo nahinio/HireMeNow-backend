@@ -87,15 +87,13 @@ async def initiate_conversation(
         .where(
             Application.job_id == payload.job_id,
             FreelancerProfile.user_id == payload.freelancer_id,
-            Application.status.in_(
-                [ApplicationStatus.pending, ApplicationStatus.accepted]
-            ),
+            Application.status == ApplicationStatus.accepted,
         )
     )
     if application_result.scalar_one_or_none() is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Freelancer has no active application for this job",
+            detail="Select an applicant before starting a conversation",
         )
 
     existing_result = await session.execute(

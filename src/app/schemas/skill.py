@@ -1,16 +1,21 @@
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.schemas.course import RecommendedCourseResponse
 
 
 class SkillCreate(BaseModel):
     name: str
+    description: str = ""
     is_active: bool = True
 
 
 class SkillResponse(BaseModel):
     id: UUID
     name: str
+    description: str
     is_active: bool
 
     model_config = {"from_attributes": True}
@@ -20,6 +25,11 @@ class QuizCreate(BaseModel):
     skill_id: UUID
     pass_threshold: int = 80
     published: bool = False
+
+
+class QuizUpdate(BaseModel):
+    pass_threshold: int | None = Field(default=None, ge=0, le=100)
+    published: bool | None = None
 
 
 class QuizResponse(BaseModel):
@@ -73,3 +83,78 @@ class QuizAttemptResponse(BaseModel):
     result: str
     score: float
     resources: list[str] = Field(default_factory=list)
+    recommended_courses: list[RecommendedCourseResponse] = Field(default_factory=list)
+
+
+class BulkQuizOptionCreate(BaseModel):
+    body: str
+    is_correct: bool = False
+
+
+class BulkQuizQuestionCreate(BaseModel):
+    body: str
+    position: int = Field(ge=1)
+    options: list[BulkQuizOptionCreate] = Field(min_length=2, max_length=100)
+
+
+class SkillWithQuizCreate(BaseModel):
+    name: str
+    description: str = ""
+    is_active: bool = True
+    pass_threshold: int = Field(default=80, ge=0, le=100)
+    published: bool = False
+    questions: list[BulkQuizQuestionCreate] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_questions(self) -> Self:
+        positions = [question.position for question in self.questions]
+        if len(positions) != len(set(positions)):
+            raise ValueError("Question positions must be unique")
+
+        for question in self.questions:
+            correct_count = sum(1 for option in question.options if option.is_correct)
+            if correct_count != 1:
+                raise ValueError(
+                    f"Question at position {question.position} must have exactly one correct option"
+                )
+        return self
+
+
+class SkillWithQuizQuestionResponse(BaseModel):
+    id: UUID
+    body: str
+    position: int
+    options: list[AnswerOptionResponse]
+
+    model_config = {"from_attributes": True}
+
+
+class SkillWithQuizResponse(BaseModel):
+    skill: SkillResponse
+    quiz: QuizResponse
+    questions: list[SkillWithQuizQuestionResponse]
+
+    @classmethod
+    def from_records(cls, skill, quiz, question_records) -> "SkillWithQuizResponse":
+        return cls(
+            skill=SkillResponse.model_validate(skill),
+            quiz=QuizResponse(
+                id=quiz.id,
+                skill_id=quiz.skill_id,
+                skill_name=skill.name,
+                pass_threshold=quiz.pass_threshold,
+                published=quiz.published,
+            ),
+            questions=[
+                SkillWithQuizQuestionResponse(
+                    id=question.id,
+                    body=question.body,
+                    position=question.position,
+                    options=[
+                        AnswerOptionResponse.model_validate(option)
+                        for option in options
+                    ],
+                )
+                for question, options in question_records
+            ],
+        )

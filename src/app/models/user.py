@@ -25,6 +25,10 @@ class User(SQLModel, table=True):
     role: UserRole = Field(sa_column=Column(user_role_enum, nullable=False))
     is_banned: bool = Field(default=False)
     ban_reason: Optional[str] = Field(default=None, sa_column=Column(Text))
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(timestamptz, nullable=True)
+    )
     created_at: datetime = Field(
         default_factory=utcnow, sa_column=Column(timestamptz, nullable=False)
     )
@@ -40,6 +44,14 @@ class FreelancerProfile(SQLModel, table=True):
     user_id: uuid.UUID = Field(foreign_key="users.id", unique=True, nullable=False)
     display_name: str = Field(sa_column=Column(Text, nullable=False))
     bio: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    profile_picture_url: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    resume_url: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    linkedin_url: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    contact_email: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    github_url: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    portfolio_url: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     available_for_work: bool = Field(default=True)
     avg_rating: Decimal = Field(
         default=Decimal("0"),
@@ -57,6 +69,11 @@ class ClientProfile(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", unique=True, nullable=False)
     company_name: str = Field(sa_column=Column(Text, nullable=False))
+    bio: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    profile_picture_url: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    company_link: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     avg_rating: Decimal = Field(
         default=Decimal("0"),
         sa_column=Column(Numeric, nullable=False, server_default="0"),

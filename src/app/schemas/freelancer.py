@@ -10,6 +10,12 @@ from app.utils.availability import serialize_availability
 class FreelancerProfileUpdate(BaseModel):
     display_name: str | None = None
     bio: str | None = None
+    profile_picture_url: str | None = None
+    resume_url: str | None = None
+    linkedin_url: str | None = None
+    contact_email: str | None = None
+    github_url: str | None = None
+    portfolio_url: str | None = None
     available_for_work: bool | None = None
 
 
@@ -18,6 +24,12 @@ class FreelancerProfileResponse(BaseModel):
     user_id: UUID
     display_name: str
     bio: str
+    profile_picture_url: str | None = None
+    resume_url: str | None = None
+    linkedin_url: str | None = None
+    contact_email: str | None = None
+    github_url: str | None = None
+    portfolio_url: str | None = None
     avg_rating: Decimal
     review_count: int
     updated_at: datetime

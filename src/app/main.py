@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import api_router
@@ -17,6 +19,10 @@ import app.models  # noqa: F401 — register SQLModel metadata
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    get_settings.cache_clear()
+    settings = get_settings()
+    upload_root = Path(settings.UPLOAD_DIR)
+    upload_root.mkdir(parents=True, exist_ok=True)
     await ensure_default_admin()
     start_scheduler()
     yield
@@ -51,3 +57,7 @@ async def health() -> dict[str, str]:
 
 
 app.include_router(api_router)
+
+upload_path = Path(settings.UPLOAD_DIR)
+upload_path.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(upload_path)), name="uploads")

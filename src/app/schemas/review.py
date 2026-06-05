@@ -4,8 +4,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import DisputeStatus, JobStatus
-
 
 class ReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
@@ -24,37 +22,6 @@ class ReviewResponse(BaseModel):
     submitted_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class DisputeCreate(BaseModel):
-    job_id: UUID
-    description: str
-
-
-class DisputeResponse(BaseModel):
-    id: UUID
-    job_id: UUID
-    raised_by: UUID
-    resolved_by: UUID | None
-    description: str
-    status: DisputeStatus
-    created_at: datetime
-    resolved_at: datetime | None
-
-    model_config = {"from_attributes": True}
-
-
-class DisputeListResponse(BaseModel):
-    items: list[DisputeResponse]
-    page: int
-    limit: int
-    total: int
-
-
-class DisputeResolveRequest(BaseModel):
-    resolution_notes: str | None = None
-    new_job_status: JobStatus | None = None
-    status: DisputeStatus | None = None
 
 
 class ReviewDeleteResponse(BaseModel):

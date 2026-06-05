@@ -6,8 +6,6 @@ from sqlalchemy import Column, Text
 from sqlmodel import Field, SQLModel
 
 from app.models.columns import timestamptz
-from app.models.db_types import dispute_status_enum
-from app.models.enums import DisputeStatus
 from app.models.user import utcnow
 
 
@@ -26,26 +24,6 @@ class Review(SQLModel, table=True):
         default_factory=utcnow, sa_column=Column(timestamptz, nullable=False)
     )
     published_at: Optional[datetime] = Field(
-        default=None, sa_column=Column(timestamptz, nullable=True)
-    )
-
-
-class Dispute(SQLModel, table=True):
-    __tablename__ = "disputes"
-
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    job_id: uuid.UUID = Field(foreign_key="jobs.id", nullable=False)
-    raised_by: uuid.UUID = Field(foreign_key="users.id", nullable=False)
-    resolved_by: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id")
-    description: str = Field(sa_column=Column(Text, nullable=False))
-    status: DisputeStatus = Field(
-        default=DisputeStatus.open,
-        sa_column=Column(dispute_status_enum, nullable=False, server_default="open"),
-    )
-    created_at: datetime = Field(
-        default_factory=utcnow, sa_column=Column(timestamptz, nullable=False)
-    )
-    resolved_at: Optional[datetime] = Field(
         default=None, sa_column=Column(timestamptz, nullable=True)
     )
 

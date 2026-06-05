@@ -6,8 +6,11 @@ from fastapi import HTTPException
 from app.core.security import (
     create_access_token,
     decode_access_token,
+    generate_password_reset_token,
     hash_password,
+    hash_password_reset_token,
     verify_password,
+    verify_password_reset_token,
 )
 
 def test_bcrypt_hash_and_verify_round_trip():
@@ -42,3 +45,10 @@ def test_jwt_invalid_token():
     with pytest.raises(HTTPException) as exc_info:
         decode_access_token("not-a-valid-token")
     assert exc_info.value.status_code == 401
+
+
+def test_password_reset_token_hash_round_trip():
+    token = generate_password_reset_token()
+    token_hash = hash_password_reset_token(token)
+    assert verify_password_reset_token(token, token_hash)
+    assert not verify_password_reset_token("wrong-token", token_hash)

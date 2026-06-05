@@ -16,6 +16,9 @@ class Skill(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     name: str = Field(sa_column=Column(Text, unique=True, nullable=False))
+    description: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
     is_active: bool = Field(default=True)
     created_at: datetime = Field(
         default_factory=utcnow, sa_column=Column(timestamptz, nullable=False)

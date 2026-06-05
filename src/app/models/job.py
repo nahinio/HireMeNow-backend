@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import Column, Numeric, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
@@ -17,7 +18,36 @@ class Job(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     client_id: uuid.UUID = Field(foreign_key="users.id", nullable=False)
     title: str = Field(sa_column=Column(Text, nullable=False))
+    thumbnail_url: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     description: str = Field(sa_column=Column(Text, nullable=False))
+    requirements_education: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    requirements_experience: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    requirements_additional: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    responsibilities: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    about_role: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    salary_amount: Optional[Decimal] = Field(
+        default=None, sa_column=Column(Numeric, nullable=True)
+    )
+    salary_negotiable: bool = Field(default=False)
+    other_benefits: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    company_name: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    company_description: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
     deliverables: str = Field(sa_column=Column(Text, nullable=False))
     budget: Decimal = Field(sa_column=Column(Numeric, nullable=False))
     timeline: str = Field(sa_column=Column(Text, nullable=False))

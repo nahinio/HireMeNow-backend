@@ -9,10 +9,10 @@ class UserRole(str, Enum):
 
 class JobStatus(str, Enum):
     open = "open"
+    filled = "filled"
     pending_confirmation = "pending_confirmation"
     completed = "completed"
     closed = "closed"
-    disputed = "disputed"
 
 
 class ConversationPhase(str, Enum):
@@ -27,13 +27,12 @@ class ApplicationStatus(str, Enum):
     canceled = "canceled"
 
 
-class DisputeStatus(str, Enum):
-    open = "open"
-    under_review = "under_review"
-    resolved = "resolved"
-    closed = "closed"
-
-
 class QuizResult(str, Enum):
     PASS = "pass"
     FAIL = "fail"
+
+
+class ReportStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"

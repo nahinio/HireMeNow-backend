@@ -9,10 +9,10 @@ user_role_enum = ENUM(
 )
 job_status_enum = ENUM(
     "open",
+    "filled",
     "pending_confirmation",
     "completed",
     "closed",
-    "disputed",
     name="job_status",
     create_type=False,
 )
@@ -30,12 +30,11 @@ application_status_enum = ENUM(
     name="application_status",
     create_type=False,
 )
-dispute_status_enum = ENUM(
-    "open",
-    "under_review",
-    "resolved",
-    "closed",
-    name="dispute_status",
+quiz_result_enum = ENUM("pass", "fail", name="quiz_result", create_type=False)
+report_status_enum = ENUM(
+    "pending",
+    "approved",
+    "rejected",
+    name="report_status",
     create_type=False,
 )
-quiz_result_enum = ENUM("pass", "fail", name="quiz_result", create_type=False)

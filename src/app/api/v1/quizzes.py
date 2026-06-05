@@ -12,7 +12,9 @@ from app.db.engine import get_async_session
 from app.models.enums import QuizResult
 from app.models.skill import AnswerOption, Question, Quiz, QuizAttempt, SkillBadge
 from app.models.user import FreelancerProfile, User
+from app.schemas.course import RecommendedCourseResponse
 from app.schemas.skill import QuizAttemptAnswer, QuizAttemptResponse
+from app.services.courses import get_active_courses_for_skill
 from app.services.quiz_grading import grade_quiz_attempt
 
 router = APIRouter(prefix="/quizzes", tags=["quizzes"])
@@ -104,8 +106,27 @@ async def attempt_quiz(
             )
         return QuizAttemptResponse(result="pass", score=float(score))
 
+    course_rows = await get_active_courses_for_skill(session, quiz.skill_id)
+    recommended_courses = [
+        RecommendedCourseResponse(
+            id=course.id,
+            skill_id=course.skill_id,
+            skill_name=skill.name,
+            name=course.name,
+            thumbnail_url=course.thumbnail_url,
+            link=course.link,
+        )
+        for course, skill in course_rows
+    ]
+    resources = (
+        ["Review the recommended courses below and retry the quiz."]
+        if recommended_courses
+        else ["Review skill materials and retry the quiz."]
+    )
+
     return QuizAttemptResponse(
         result="fail",
         score=float(score),
-        resources=["Review skill materials and retry the quiz."],
+        resources=resources,
+        recommended_courses=recommended_courses,
     )

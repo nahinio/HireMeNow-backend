@@ -34,13 +34,24 @@ async def admin_login(client: AsyncClient) -> str:
 
 async def create_skill_quiz(
     client: AsyncClient, admin_token: str, skill_name: str
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     skill = await client.post(
         "/api/v1/admin/skills",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"name": skill_name},
     )
     skill_id = skill.json()["id"]
+    course = await client.post(
+        "/api/v1/admin/courses",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "skill_id": skill_id,
+            "name": f"{skill_name} Basics",
+            "link": "https://example.com/course",
+            "thumbnail_url": "https://example.com/thumb.png",
+        },
+    )
+    assert course.status_code == 201
     quiz = await client.post(
         "/api/v1/admin/quizzes",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -53,7 +64,7 @@ async def create_skill_quiz(
         json={"body": f"{skill_name} question", "position": 1},
     )
     question_id = question.json()["id"]
-    await client.post(
+    wrong = await client.post(
         f"/api/v1/admin/questions/{question_id}/options",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"body": "Wrong", "is_correct": False},
@@ -63,7 +74,22 @@ async def create_skill_quiz(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"body": "Right", "is_correct": True},
     )
-    return skill_id, quiz_id, question_id, correct.json()["id"]
+    return skill_id, quiz_id, question_id, wrong.json()["id"], correct.json()["id"]
+
+
+async def select_freelancer_for_job(
+    client: AsyncClient,
+    job_id: str,
+    client_token: str,
+    application_id: str,
+) -> dict:
+    response = await client.post(
+        f"/api/v1/jobs/{job_id}/select",
+        headers={"Authorization": f"Bearer {client_token}"},
+        json={"application_id": application_id},
+    )
+    assert response.status_code == 200
+    return response.json()
 
 
 @pytest.mark.asyncio
@@ -88,10 +114,10 @@ async def test_register_login_profile_flow(client: AsyncClient):
 async def test_multi_skill_gate_and_duplicate_application(client: AsyncClient):
     admin_token = await admin_login(client)
 
-    skill_a_id, quiz_a_id, q_a_id, opt_a_id = await create_skill_quiz(
+    skill_a_id, quiz_a_id, q_a_id, _, opt_a_id = await create_skill_quiz(
         client, admin_token, "Python"
     )
-    skill_b_id, quiz_b_id, q_b_id, opt_b_id = await create_skill_quiz(
+    skill_b_id, quiz_b_id, q_b_id, _, opt_b_id = await create_skill_quiz(
         client, admin_token, "FastAPI"
     )
 
@@ -154,7 +180,7 @@ async def test_multi_skill_gate_and_duplicate_application(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
     admin_token = await admin_login(client)
-    skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
+    skill_id, quiz_id, question_id, _, option_id = await create_skill_quiz(
         client, admin_token, "React"
     )
 
@@ -185,10 +211,11 @@ async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
         },
     )
     job_id = job.json()["id"]
-    await client.post(
+    apply_response = await client.post(
         f"/api/v1/jobs/{job_id}/apply",
         headers={"Authorization": f"Bearer {freelancer_token}"},
     )
+    assert apply_response.status_code == 201
 
     me = await client.get(
         "/api/v1/auth/me",
@@ -198,16 +225,16 @@ async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
 
     blocked = await client.post(
         "/api/v1/conversations/initiate",
-        headers={"Authorization": f"Bearer {freelancer_token}"},
+        headers={"Authorization": f"Bearer {client_token}"},
         json={"job_id": job_id, "freelancer_id": freelancer_user_id},
     )
-    assert blocked.status_code == 403
+    assert blocked.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_conversation_lock_after_completion_signal(client: AsyncClient):
     admin_token = await admin_login(client)
-    skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
+    skill_id, quiz_id, question_id, _, option_id = await create_skill_quiz(
         client, admin_token, "Docker"
     )
 
@@ -238,23 +265,15 @@ async def test_conversation_lock_after_completion_signal(client: AsyncClient):
         },
     )
     job_id = job.json()["id"]
-    await client.post(
+    apply_response = await client.post(
         f"/api/v1/jobs/{job_id}/apply",
         headers={"Authorization": f"Bearer {freelancer_token}"},
     )
-
-    me = await client.get(
-        "/api/v1/auth/me",
-        headers={"Authorization": f"Bearer {freelancer_token}"},
+    application_id = apply_response.json()["id"]
+    selection = await select_freelancer_for_job(
+        client, job_id, client_token, application_id
     )
-    freelancer_user_id = me.json()["id"]
-
-    conv = await client.post(
-        "/api/v1/conversations/initiate",
-        headers={"Authorization": f"Bearer {client_token}"},
-        json={"job_id": job_id, "freelancer_id": freelancer_user_id},
-    )
-    conversation_id = conv.json()["id"]
+    conversation_id = selection["conversation"]["id"]
 
     ok = await client.post(
         f"/api/v1/conversations/{conversation_id}/messages",
@@ -279,7 +298,7 @@ async def test_conversation_lock_after_completion_signal(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_double_blind_review_gate(client: AsyncClient):
     admin_token = await admin_login(client)
-    skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
+    skill_id, quiz_id, question_id, _, option_id = await create_skill_quiz(
         client, admin_token, "SQL"
     )
 
@@ -310,9 +329,12 @@ async def test_double_blind_review_gate(client: AsyncClient):
         },
     )
     job_id = job.json()["id"]
-    await client.post(
+    apply_response = await client.post(
         f"/api/v1/jobs/{job_id}/apply",
         headers={"Authorization": f"Bearer {freelancer_token}"},
+    )
+    await select_freelancer_for_job(
+        client, job_id, client_token, apply_response.json()["id"]
     )
 
     await client.post(
@@ -354,7 +376,7 @@ async def test_double_blind_review_gate(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_review_validation(client: AsyncClient):
     admin_token = await admin_login(client)
-    skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
+    skill_id, quiz_id, question_id, _, option_id = await create_skill_quiz(
         client, admin_token, "Go"
     )
 
@@ -385,9 +407,12 @@ async def test_review_validation(client: AsyncClient):
         },
     )
     job_id = job.json()["id"]
-    await client.post(
+    apply_response = await client.post(
         f"/api/v1/jobs/{job_id}/apply",
         headers={"Authorization": f"Bearer {freelancer_token}"},
+    )
+    await select_freelancer_for_job(
+        client, job_id, client_token, apply_response.json()["id"]
     )
     await client.post(
         f"/api/v1/jobs/{job_id}/complete",

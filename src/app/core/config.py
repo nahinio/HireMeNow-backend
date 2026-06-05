@@ -32,6 +32,33 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    UPLOAD_DIR: str = "uploads"
+    MAX_IMAGE_SIZE_BYTES: int = 5 * 1024 * 1024
+    MAX_RESUME_SIZE_BYTES: int = 10 * 1024 * 1024
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 60
+    EXPOSE_PASSWORD_RESET_TOKEN: bool = False
+    APP_NAME: str = "HireMeNow"
+    FRONTEND_RESET_URL: str | None = None
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = True
+    EMAIL_FROM: str | None = None
+    CLOUDINARY_CLOUD_NAME: str | None = None
+    CLOUDINARY_API_KEY: str | None = None
+    CLOUDINARY_API_SECRET: str | None = None
+    CLOUDINARY_FOLDER: str = "hiremenow"
+
+    def smtp_is_configured(self) -> bool:
+        return bool(self.SMTP_HOST and self.EMAIL_FROM and self.FRONTEND_RESET_URL)
+
+    def cloudinary_is_configured(self) -> bool:
+        return bool(
+            self.CLOUDINARY_CLOUD_NAME
+            and self.CLOUDINARY_API_KEY
+            and self.CLOUDINARY_API_SECRET
+        )
 
     @field_validator("DATABASE_URL")
     @classmethod
