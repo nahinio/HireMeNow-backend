@@ -14,6 +14,7 @@ from app.db.engine import get_async_session
 from app.models.enums import UserRole
 from app.models.user import ClientProfile, FreelancerProfile, User
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserResponse
+from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -83,7 +84,7 @@ async def login(
             detail="Invalid credentials",
         )
 
-    token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    token = create_access_token({"sub": str(user.id), "role": enum_to_str(user.role)})
     return TokenResponse(access_token=token)
 
 

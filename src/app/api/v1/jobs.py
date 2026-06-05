@@ -23,6 +23,7 @@ from app.schemas.job import (
     build_applicant_response,
 )
 from app.schemas.skill import SkillResponse
+from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -309,7 +310,7 @@ async def signal_completion(
     if job.status not in (JobStatus.open, JobStatus.pending_confirmation):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Cannot signal completion for job with status {job.status.value}",
+            detail=f"Cannot signal completion for job with status {enum_to_str(job.status)}",
         )
 
     await _verify_job_party(session, job, current_user)

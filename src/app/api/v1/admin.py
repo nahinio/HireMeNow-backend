@@ -43,6 +43,7 @@ from app.schemas.skill import (
     SkillResponse,
 )
 from app.services.reviews import recalculate_profile_ratings, update_profile_ratings_for_user
+from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -330,7 +331,7 @@ async def ban_user(
 
     return BanResponse(
         user_id=user.id,
-        role=user.role.value,
+        role=enum_to_str(user.role),
         pending_applications_deleted=pending_deleted,
         jobs_closed=jobs_closed,
         applications_canceled=applications_canceled,
