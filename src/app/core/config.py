@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
     SMTP_USE_TLS: bool = True
     EMAIL_FROM: str | None = None
+    RESEND_API_KEY: str | None = None
     CLOUDINARY_CLOUD_NAME: str | None = None
     CLOUDINARY_API_KEY: str | None = None
     CLOUDINARY_API_SECRET: str | None = None
@@ -52,6 +53,16 @@ class Settings(BaseSettings):
 
     def smtp_is_configured(self) -> bool:
         return bool(self.SMTP_HOST and self.EMAIL_FROM and self.FRONTEND_RESET_URL)
+
+    def resend_api_key(self) -> str | None:
+        return self.RESEND_API_KEY or self.SMTP_PASSWORD
+
+    def email_is_configured(self) -> bool:
+        return bool(
+            self.EMAIL_FROM
+            and self.FRONTEND_RESET_URL
+            and (self.resend_api_key() or self.SMTP_HOST)
+        )
 
     def cloudinary_is_configured(self) -> bool:
         return bool(

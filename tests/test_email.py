@@ -1,4 +1,10 @@
-from app.services.email import build_password_reset_url, render_password_reset_html
+from unittest.mock import AsyncMock, patch
+
+from app.services.email import (
+    build_password_reset_url,
+    render_password_reset_html,
+    send_password_reset_email,
+)
 
 
 def test_build_password_reset_url_appends_token_query():
@@ -22,3 +28,25 @@ def test_render_password_reset_html_uses_design_template():
     assert "Set new password" in html
     assert "https://i.imgur.com/0Td5v8y.png" in html
     assert "Sent by <span>HireMeNow</span>" in html
+
+
+async def test_send_password_reset_email_uses_resend_api():
+    with (
+        patch("app.services.email.get_settings") as mock_settings,
+        patch(
+            "app.services.email._send_via_resend_api",
+            new_callable=AsyncMock,
+        ) as mock_resend,
+    ):
+        settings = mock_settings.return_value
+        settings.email_is_configured.return_value = True
+        settings.resend_api_key.return_value = "re_test_key"
+        settings.smtp_is_configured.return_value = False
+        settings.FRONTEND_RESET_URL = "http://127.0.0.1:5500/"
+        settings.APP_NAME = "HireMeNow"
+        settings.PASSWORD_RESET_EXPIRE_MINUTES = 60
+
+        await send_password_reset_email("user@example.com", "secret-token")
+
+    mock_resend.assert_awaited_once()
+    assert mock_resend.await_args.kwargs["to_email"] == "user@example.com"

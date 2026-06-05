@@ -54,7 +54,7 @@ async def request_password_reset(
             )
         )
 
-        if settings.smtp_is_configured():
+        if settings.email_is_configured():
             try:
                 await send_password_reset_email(user.email, raw_token)
             except Exception:

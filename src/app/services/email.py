@@ -5,11 +5,14 @@ from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import httpx
+
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 EMAIL_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "email"
+RESEND_API_URL = "https://api.resend.com/emails"
 
 
 def build_password_reset_url(frontend_reset_url: str, token: str) -> str:
@@ -70,10 +73,49 @@ def _send_smtp_email(
             client.send_message(message)
 
 
+async def _send_via_resend_api(
+    *,
+    to_email: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+) -> None:
+    settings = get_settings()
+    api_key = settings.resend_api_key()
+    if not api_key or not settings.EMAIL_FROM:
+        raise RuntimeError("Resend API is not configured")
+
+    payload: dict[str, object] = {
+        "from": settings.EMAIL_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "text": body,
+    }
+    if html_body:
+        payload["html"] = html_body
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if response.status_code >= 400:
+            detail = response.text
+            try:
+                detail = response.json().get("message", detail)
+            except Exception:
+                pass
+            raise RuntimeError(f"Resend API error ({response.status_code}): {detail}")
+
+
 async def send_password_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
-    if not settings.smtp_is_configured():
-        raise RuntimeError("SMTP is not fully configured")
+    if not settings.email_is_configured():
+        raise RuntimeError("Email is not fully configured")
 
     reset_url = build_password_reset_url(settings.FRONTEND_RESET_URL, reset_token)
     expire_minutes = settings.PASSWORD_RESET_EXPIRE_MINUTES
@@ -81,11 +123,22 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> None:
     body = render_password_reset_text(reset_url, settings.APP_NAME, expire_minutes)
     html_body = render_password_reset_html(reset_url)
 
-    await asyncio.to_thread(
-        _send_smtp_email,
-        to_email=to_email,
-        subject=subject,
-        body=body,
-        html_body=html_body,
-    )
+    if settings.resend_api_key():
+        await _send_via_resend_api(
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            html_body=html_body,
+        )
+    elif settings.smtp_is_configured():
+        await asyncio.to_thread(
+            _send_smtp_email,
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            html_body=html_body,
+        )
+    else:
+        raise RuntimeError("No email delivery method configured")
+
     logger.info("Password reset email sent to %s", to_email)
