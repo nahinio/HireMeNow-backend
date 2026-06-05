@@ -23,6 +23,15 @@ async def login(client: AsyncClient, email: str) -> str:
     return response.json()["access_token"]
 
 
+async def admin_login(client: AsyncClient) -> str:
+    response = await client.post(
+        "/api/v1/auth/admin/login",
+        json={"email": "admin@hiremenow.com", "password": "password"},
+    )
+    assert response.status_code == 200
+    return response.json()["access_token"]
+
+
 async def create_skill_quiz(
     client: AsyncClient, admin_token: str, skill_name: str
 ) -> tuple[str, str, str, str]:
@@ -77,8 +86,7 @@ async def test_register_login_profile_flow(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_multi_skill_gate_and_duplicate_application(client: AsyncClient):
-    await register_user(client, "admin@example.com", "admin")
-    admin_token = await login(client, "admin@example.com")
+    admin_token = await admin_login(client)
 
     skill_a_id, quiz_a_id, q_a_id, opt_a_id = await create_skill_quiz(
         client, admin_token, "Python"
@@ -145,8 +153,7 @@ async def test_multi_skill_gate_and_duplicate_application(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
-    await register_user(client, "admin3@example.com", "admin")
-    admin_token = await login(client, "admin3@example.com")
+    admin_token = await admin_login(client)
     skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
         client, admin_token, "React"
     )
@@ -199,8 +206,7 @@ async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_conversation_lock_after_completion_signal(client: AsyncClient):
-    await register_user(client, "admin4@example.com", "admin")
-    admin_token = await login(client, "admin4@example.com")
+    admin_token = await admin_login(client)
     skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
         client, admin_token, "Docker"
     )
@@ -272,8 +278,7 @@ async def test_conversation_lock_after_completion_signal(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_double_blind_review_gate(client: AsyncClient):
-    await register_user(client, "admin5@example.com", "admin")
-    admin_token = await login(client, "admin5@example.com")
+    admin_token = await admin_login(client)
     skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
         client, admin_token, "SQL"
     )
@@ -348,8 +353,7 @@ async def test_double_blind_review_gate(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_review_validation(client: AsyncClient):
-    await register_user(client, "admin6@example.com", "admin")
-    admin_token = await login(client, "admin6@example.com")
+    admin_token = await admin_login(client)
     skill_id, quiz_id, question_id, option_id = await create_skill_quiz(
         client, admin_token, "Go"
     )

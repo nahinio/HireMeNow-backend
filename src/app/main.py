@@ -9,6 +9,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import http_exception_handler, validation_exception_handler
 from app.db.engine import engine
+from app.services.bootstrap import ensure_default_admin
 from app.workers.scheduler import shutdown_scheduler, start_scheduler
 
 import app.models  # noqa: F401 — register SQLModel metadata
@@ -16,6 +17,7 @@ import app.models  # noqa: F401 — register SQLModel metadata
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_default_admin()
     start_scheduler()
     yield
     shutdown_scheduler()

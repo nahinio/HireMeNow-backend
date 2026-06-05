@@ -19,6 +19,11 @@ from app.utils.enums import enum_to_str
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _issue_token(user: User) -> TokenResponse:
+    token = create_access_token({"sub": str(user.id), "role": enum_to_str(user.role)})
+    return TokenResponse(access_token=token)
+
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -84,8 +89,47 @@ async def login(
             detail="Invalid credentials",
         )
 
-    token = create_access_token({"sub": str(user.id), "role": enum_to_str(user.role)})
-    return TokenResponse(access_token=token)
+    if enum_to_str(user.role) == UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admins must sign in via /api/v1/auth/admin/login",
+        )
+
+    if user.is_banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been banned",
+        )
+
+    return _issue_token(user)
+
+
+@router.post("/admin/login", response_model=TokenResponse)
+async def admin_login(
+    payload: LoginRequest,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> TokenResponse:
+    result = await session.execute(select(User).where(User.email == payload.email.lower()))
+    user = result.scalar_one_or_none()
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+
+    if enum_to_str(user.role) != UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access only",
+        )
+
+    if user.is_banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been banned",
+        )
+
+    return _issue_token(user)
 
 
 @router.get("/me", response_model=UserResponse)

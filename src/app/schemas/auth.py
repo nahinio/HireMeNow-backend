@@ -1,15 +1,18 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models.enums import UserRole
 
+RegisterRole = Literal[UserRole.freelancer, UserRole.client]
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
-    role: UserRole
+    role: RegisterRole
     display_name: str | None = None
     company_name: str | None = None
 
