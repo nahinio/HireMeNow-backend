@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="JoinUs API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="HireMeNow API", version="1.0.0", lifespan=lifespan)
 
 settings = get_settings()
 origins = [

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: joinus-api
+    name: hiremenow-api
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

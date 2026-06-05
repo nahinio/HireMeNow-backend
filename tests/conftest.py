@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+asyncpg://test:test@localhost:5432/joinus_test?sslmode=require",
+    "postgresql+asyncpg://test:test@localhost:5432/hiremenow_test?sslmode=require",
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests")
 
