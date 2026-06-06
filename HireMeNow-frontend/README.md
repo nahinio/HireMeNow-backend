@@ -23,6 +23,8 @@ http://localhost:8080,https://your-frontend.onrender.com
 
 4. API URL is set in `js/config.js` (default: production Render backend).
 
+**Password reset links:** Open this folder with Live Server (port 5500) from `index.html` here — not from the backend repo root. On Render, set backend `FRONTEND_RESET_URL` to your deployed frontend URL (e.g. `https://your-app.onrender.com/`).
+
 ## User flows
 
 | Role | Features |

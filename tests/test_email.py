@@ -35,7 +35,7 @@ def test_render_password_reset_html_uses_design_template():
     html = render_password_reset_html("http://127.0.0.1:5500/?token=test")
     assert 'href="http://127.0.0.1:5500/?token=test"' in html
     assert "Set new password" in html
-    assert "https://i.imgur.com/0Td5v8y.png" in html
+    assert 'src="data:image/png;base64,' in html
     assert "Sent by <span>HireMeNow</span>" in html
 
 

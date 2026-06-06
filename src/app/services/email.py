@@ -1,7 +1,10 @@
 import asyncio
+import base64
 import logging
+import mimetypes
 import smtplib
 from email.message import EmailMessage
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -12,6 +15,7 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 EMAIL_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "email"
+EMAIL_ASSET_DIR = EMAIL_TEMPLATE_DIR.parent
 RESEND_API_URL = "https://api.resend.com/emails"
 
 
@@ -28,9 +32,23 @@ def build_password_reset_url(frontend_reset_url: str, token: str) -> str:
     return urlunparse(parsed._replace(query=clean_query, fragment=fragment))
 
 
+@lru_cache
+def build_email_banner_data_uri(asset_name: str = "HireMeNow.png") -> str:
+    asset_path = EMAIL_ASSET_DIR / asset_name
+    if not asset_path.is_file():
+        raise FileNotFoundError(f"Email asset not found: {asset_path}")
+
+    mime_type = mimetypes.guess_type(asset_path.name)[0] or "image/png"
+    encoded = base64.b64encode(asset_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
 def render_password_reset_html(reset_url: str) -> str:
     template = (EMAIL_TEMPLATE_DIR / "password_reset.html").read_text(encoding="utf-8")
-    return template.replace("{{ reset_url }}", reset_url)
+    return (
+        template.replace("{{ reset_url }}", reset_url)
+        .replace("{{ banner_src }}", build_email_banner_data_uri())
+    )
 
 
 def render_password_reset_text(reset_url: str, app_name: str, expire_minutes: int) -> str:
