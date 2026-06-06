@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: str = (
+        "http://hiremenow.nahinio.xyz,https://hiremenow.nahinio.xyz,"
         "http://localhost:3000,http://localhost:5173,http://localhost:5500,"
         "http://127.0.0.1:5173,http://127.0.0.1:5500"
     )
@@ -41,13 +42,14 @@ class Settings(BaseSettings):
     PASSWORD_RESET_EXPIRE_MINUTES: int = 60
     EXPOSE_PASSWORD_RESET_TOKEN: bool = False
     APP_NAME: str = "HireMeNow"
-    FRONTEND_RESET_URL: str | None = None
+    PUBLIC_API_URL: str = "https://hiremenow-backend-8la2.onrender.com"
+    FRONTEND_RESET_URL: str | None = "http://hiremenow.nahinio.xyz/"
+    EMAIL_FROM: str | None = "HireMeNow <noreply@hiremenow.nahinio.xyz>"
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_USE_TLS: bool = True
-    EMAIL_FROM: str | None = None
     RESEND_API_KEY: str | None = None
     CLOUDINARY_CLOUD_NAME: str | None = None
     CLOUDINARY_API_KEY: str | None = None

@@ -61,3 +61,6 @@ app.include_router(api_router)
 upload_path = Path(settings.UPLOAD_DIR)
 upload_path.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(upload_path)), name="uploads")
+
+email_assets_path = Path(__file__).resolve().parent / "templates"
+app.mount("/static/email", StaticFiles(directory=str(email_assets_path)), name="email-assets")

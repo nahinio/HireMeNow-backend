@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 EMAIL_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "email"
 EMAIL_ASSET_DIR = EMAIL_TEMPLATE_DIR.parent
+EMAIL_BANNER_FILENAME = "HireMeNow.png"
+EMAIL_BANNER_CID = "hiremenow-banner"
 RESEND_API_URL = "https://api.resend.com/emails"
 
 
@@ -33,21 +35,38 @@ def build_password_reset_url(frontend_reset_url: str, token: str) -> str:
 
 
 @lru_cache
-def build_email_banner_data_uri(asset_name: str = "HireMeNow.png") -> str:
+def _read_banner_bytes(asset_name: str = EMAIL_BANNER_FILENAME) -> bytes:
     asset_path = EMAIL_ASSET_DIR / asset_name
     if not asset_path.is_file():
         raise FileNotFoundError(f"Email asset not found: {asset_path}")
-
-    mime_type = mimetypes.guess_type(asset_path.name)[0] or "image/png"
-    encoded = base64.b64encode(asset_path.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
+    return asset_path.read_bytes()
 
 
-def render_password_reset_html(reset_url: str) -> str:
+def build_email_banner_public_url(asset_name: str = EMAIL_BANNER_FILENAME) -> str:
+    settings = get_settings()
+    base = settings.PUBLIC_API_URL.rstrip("/")
+    return f"{base}/static/email/{asset_name}"
+
+
+def build_email_banner_inline_attachment() -> dict[str, str]:
+    return {
+        "filename": EMAIL_BANNER_FILENAME,
+        "content": base64.b64encode(_read_banner_bytes()).decode("ascii"),
+        "content_id": EMAIL_BANNER_CID,
+        "content_type": mimetypes.guess_type(EMAIL_BANNER_FILENAME)[0] or "image/png",
+    }
+
+
+def render_password_reset_html(reset_url: str, *, use_inline_banner: bool = False) -> str:
     template = (EMAIL_TEMPLATE_DIR / "password_reset.html").read_text(encoding="utf-8")
+    banner_src = (
+        f"cid:{EMAIL_BANNER_CID}"
+        if use_inline_banner
+        else build_email_banner_public_url()
+    )
     return (
         template.replace("{{ reset_url }}", reset_url)
-        .replace("{{ banner_src }}", build_email_banner_data_uri())
+        .replace("{{ banner_src }}", banner_src)
     )
 
 
@@ -102,6 +121,7 @@ async def _send_via_resend_api(
     subject: str,
     body: str,
     html_body: str | None = None,
+    attachments: list[dict[str, str]] | None = None,
 ) -> None:
     settings = get_settings()
     api_key = settings.resend_api_key()
@@ -116,6 +136,8 @@ async def _send_via_resend_api(
     }
     if html_body:
         payload["html"] = html_body
+    if attachments:
+        payload["attachments"] = attachments
 
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
@@ -144,16 +166,18 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> None:
     expire_minutes = settings.PASSWORD_RESET_EXPIRE_MINUTES
     subject = f"Reset your {settings.APP_NAME} password"
     body = render_password_reset_text(reset_url, settings.APP_NAME, expire_minutes)
-    html_body = render_password_reset_html(reset_url)
 
     if settings.resend_api_key():
+        html_body = render_password_reset_html(reset_url, use_inline_banner=True)
         await _send_via_resend_api(
             to_email=to_email,
             subject=subject,
             body=body,
             html_body=html_body,
+            attachments=[build_email_banner_inline_attachment()],
         )
     elif settings.smtp_is_configured():
+        html_body = render_password_reset_html(reset_url, use_inline_banner=False)
         await asyncio.to_thread(
             _send_smtp_email,
             to_email=to_email,

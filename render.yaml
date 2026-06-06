@@ -21,7 +21,9 @@ services:
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: 60
       - key: CORS_ORIGINS
-        sync: false
+        value: "http://hiremenow.nahinio.xyz,https://hiremenow.nahinio.xyz,http://localhost:5173,http://127.0.0.1:5173,http://localhost:5500,http://127.0.0.1:5500"
+      - key: PUBLIC_API_URL
+        value: "https://hiremenow-backend-8la2.onrender.com"
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
@@ -29,9 +31,9 @@ services:
       - key: CLOUDINARY_API_SECRET
         sync: false
       - key: FRONTEND_RESET_URL
-        sync: false
+        value: "http://hiremenow.nahinio.xyz/"
       - key: EMAIL_FROM
-        sync: false
+        value: "HireMeNow <noreply@hiremenow.nahinio.xyz>"
       - key: RESEND_API_KEY
         sync: false
       - key: SMTP_HOST
