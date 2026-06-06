@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    CORS_ORIGINS: str = (
+        "http://localhost:3000,http://localhost:5173,http://localhost:5500,"
+        "http://127.0.0.1:5173,http://127.0.0.1:5500"
+    )
     UPLOAD_DIR: str = "uploads"
     MAX_IMAGE_SIZE_BYTES: int = 5 * 1024 * 1024
     MAX_RESUME_SIZE_BYTES: int = 10 * 1024 * 1024
