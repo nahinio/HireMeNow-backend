@@ -21,6 +21,48 @@ class SkillResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SkillQuizSummary(BaseModel):
+    quiz_id: UUID
+    pass_threshold: int
+    question_count: int
+
+
+class SkillPublicResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str
+    quiz: SkillQuizSummary | None = None
+
+
+class SkillListResponse(BaseModel):
+    items: list[SkillPublicResponse]
+    page: int
+    limit: int
+    total: int
+
+
+class AnswerOptionPublicResponse(BaseModel):
+    id: UUID
+    question_id: UUID
+    body: str
+
+
+class QuizQuestionPublicResponse(BaseModel):
+    id: UUID
+    quiz_id: UUID
+    body: str
+    position: int
+    options: list[AnswerOptionPublicResponse]
+
+
+class QuizPublicDetailResponse(BaseModel):
+    id: UUID
+    skill_id: UUID
+    skill_name: str
+    pass_threshold: int
+    questions: list[QuizQuestionPublicResponse]
+
+
 class QuizCreate(BaseModel):
     skill_id: UUID
     pass_threshold: int = 80

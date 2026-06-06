@@ -10,10 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_freelancer
 from app.db.engine import get_async_session
 from app.models.enums import QuizResult
-from app.models.skill import AnswerOption, Question, Quiz, QuizAttempt, SkillBadge
+from app.models.skill import AnswerOption, Question, Quiz, QuizAttempt, Skill, SkillBadge
 from app.models.user import FreelancerProfile, User
 from app.schemas.course import RecommendedCourseResponse
-from app.schemas.skill import QuizAttemptAnswer, QuizAttemptResponse
+from app.schemas.skill import (
+    AnswerOptionPublicResponse,
+    QuizAttemptAnswer,
+    QuizAttemptResponse,
+    QuizPublicDetailResponse,
+    QuizQuestionPublicResponse,
+)
 from app.services.courses import get_active_courses_for_skill
 from app.services.quiz_grading import grade_quiz_attempt
 
@@ -33,6 +39,72 @@ async def _get_freelancer_profile(
             detail="Freelancer profile not found",
         )
     return profile
+
+
+@router.get("/{quiz_id}", response_model=QuizPublicDetailResponse)
+async def get_quiz(
+    quiz_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> QuizPublicDetailResponse:
+    quiz_result = await session.execute(
+        select(Quiz, Skill)
+        .join(Skill, Quiz.skill_id == Skill.id)
+        .where(
+            Quiz.id == quiz_id,
+            Quiz.published.is_(True),
+            Skill.is_active.is_(True),
+        )
+    )
+    row = quiz_result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+
+    quiz, skill = row
+
+    questions_result = await session.execute(
+        select(Question).where(Question.quiz_id == quiz_id).order_by(Question.position.asc())
+    )
+    questions = questions_result.scalars().all()
+    if not questions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Quiz has no questions",
+        )
+
+    question_ids = [question.id for question in questions]
+    options_result = await session.execute(
+        select(AnswerOption)
+        .where(AnswerOption.question_id.in_(question_ids))
+        .order_by(AnswerOption.body.asc())
+    )
+    options = options_result.scalars().all()
+    options_by_question: dict[UUID, list[AnswerOption]] = {}
+    for option in options:
+        options_by_question.setdefault(option.question_id, []).append(option)
+
+    return QuizPublicDetailResponse(
+        id=quiz.id,
+        skill_id=quiz.skill_id,
+        skill_name=skill.name,
+        pass_threshold=quiz.pass_threshold,
+        questions=[
+            QuizQuestionPublicResponse(
+                id=question.id,
+                quiz_id=question.quiz_id,
+                body=question.body,
+                position=question.position,
+                options=[
+                    AnswerOptionPublicResponse(
+                        id=option.id,
+                        question_id=option.question_id,
+                        body=option.body,
+                    )
+                    for option in options_by_question.get(question.id, [])
+                ],
+            )
+            for question in questions
+        ],
+    )
 
 
 @router.post("/{quiz_id}/attempt", response_model=QuizAttemptResponse)

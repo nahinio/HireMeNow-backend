@@ -12,6 +12,7 @@ from app.api.v1 import (
     reports,
     reviews,
     courses,
+    skills,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -21,6 +22,7 @@ api_router.include_router(freelancers.router)
 api_router.include_router(client.router)
 api_router.include_router(admin.router)
 api_router.include_router(quizzes.router)
+api_router.include_router(skills.router)
 api_router.include_router(courses.router)
 api_router.include_router(jobs.router)
 api_router.include_router(conversations.router)
