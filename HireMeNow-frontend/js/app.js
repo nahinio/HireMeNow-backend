@@ -4,8 +4,15 @@ const App = {
     App.bindGlobalNav();
     App.updateNav();
     window.addEventListener('hashchange', () => Router.render());
-    if (!location.hash) location.hash = '#/';
-    else Router.render();
+
+    if (Utils.handleEmailResetLink()) {
+      Router.render();
+    } else if (!location.hash) {
+      location.hash = '#/';
+    } else {
+      Router.render();
+    }
+
     Store.refreshSkillsCache();
   },
 

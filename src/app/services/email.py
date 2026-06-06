@@ -20,7 +20,12 @@ def build_password_reset_url(frontend_reset_url: str, token: str) -> str:
     query = parse_qs(parsed.query, keep_blank_values=True)
     query["token"] = [token]
     clean_query = urlencode({key: values[0] for key, values in query.items()}, doseq=False)
-    return urlunparse(parsed._replace(query=clean_query))
+
+    fragment = parsed.fragment
+    if not fragment:
+        fragment = "/reset-password"
+
+    return urlunparse(parsed._replace(query=clean_query, fragment=fragment))
 
 
 def render_password_reset_html(reset_url: str) -> str:

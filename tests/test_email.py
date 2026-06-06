@@ -11,6 +11,7 @@ def test_build_password_reset_url_appends_token_query():
     url = build_password_reset_url("http://localhost:5173/reset-password", "abc/123")
     assert url.startswith("http://localhost:5173/reset-password?")
     assert "token=abc%2F123" in url
+    assert url.endswith("#/reset-password")
 
 
 def test_build_password_reset_url_replaces_existing_token():
@@ -20,6 +21,14 @@ def test_build_password_reset_url_replaces_existing_token():
     )
     assert "token=new-token" in url
     assert "token=old" not in url
+    assert "#/reset-password" in url
+
+
+def test_build_password_reset_url_adds_hash_route_for_spa_root():
+    url = build_password_reset_url("http://127.0.0.1:5500/", "reset-me")
+    assert url.startswith("http://127.0.0.1:5500/?")
+    assert "token=reset-me" in url
+    assert url.endswith("#/reset-password")
 
 
 def test_render_password_reset_html_uses_design_template():

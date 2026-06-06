@@ -27,13 +27,28 @@ const Utils = {
   },
 
   getQueryParams() {
+    const out = {};
+    const search = new URLSearchParams(location.search);
+    for (const [k, v] of search) out[k] = v;
+
     const hash = location.hash.slice(1);
     const qIdx = hash.indexOf('?');
-    if (qIdx === -1) return {};
-    const params = new URLSearchParams(hash.slice(qIdx + 1));
-    const out = {};
-    for (const [k, v] of params) out[k] = v;
+    if (qIdx !== -1) {
+      const hashParams = new URLSearchParams(hash.slice(qIdx + 1));
+      for (const [k, v] of hashParams) out[k] = v;
+    }
     return out;
+  },
+
+  handleEmailResetLink() {
+    const token = new URLSearchParams(location.search).get('token');
+    if (!token) return false;
+    const hashRoute = `#/reset-password?token=${encodeURIComponent(token)}`;
+    if (location.hash !== hashRoute) {
+      history.replaceState(null, '', location.pathname);
+      location.hash = `/reset-password?token=${encodeURIComponent(token)}`;
+    }
+    return true;
   },
 
   buildHash(path, params = {}) {
