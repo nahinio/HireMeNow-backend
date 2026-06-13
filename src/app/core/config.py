@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     PASSWORD_RESET_EXPIRE_MINUTES: int = 60
     EXPOSE_PASSWORD_RESET_TOKEN: bool = False
     APP_NAME: str = "HireMeNow"
-    PUBLIC_API_URL: str = "https://hiremenow-backend-8la2.onrender.com"
+    PUBLIC_API_URL: str = "https://hiremenow-backend-faster.onrender.com"
     FRONTEND_RESET_URL: str | None = "http://hiremenow.nahinio.xyz/"
     EMAIL_FROM: str | None = "HireMeNow <noreply@hiremenow.nahinio.xyz>"
     SMTP_HOST: str | None = None
