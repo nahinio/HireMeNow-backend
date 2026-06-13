@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: str = (
         "http://hiremenow.nahinio.xyz,https://hiremenow.nahinio.xyz,"
+        "http://www.hiremenow.nahinio.xyz,https://www.hiremenow.nahinio.xyz,"
         "http://localhost:3000,http://localhost:5173,http://localhost:5500,"
         "http://127.0.0.1:5173,http://127.0.0.1:5500"
     )
