@@ -3,9 +3,10 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
-from app.core.config import get_settings
+from app.core.config import get_settings, neon_connect_args
 
 logger = logging.getLogger(__name__)
 
@@ -13,21 +14,9 @@ settings = get_settings()
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    # pre_ping adds a full round-trip before every checkout; with a remote DB that
-    # is expensive. We instead keep connections fresh via keepalive + recycle.
-    pool_pre_ping=False,
-    pool_size=10,
-    max_overflow=20,
-    # Recycle connections before serverless providers (e.g. Neon) drop idle ones,
-    # so a "warm" request never pays the full reconnect/wake cost.
-    pool_recycle=280,
-    connect_args={
-        "ssl": "require",
-        "server_settings": {"application_name": "hiremenow"},
-        # Neon pooler (PgBouncer) does not support prepared statements reliably;
-        # without this, schema changes or pooler routing cause InvalidCachedStatementError.
-        "prepared_statement_cache_size": 0,
-    },
+    # NullPool avoids stale connections through Neon PgBouncer after deploy/migrations.
+    poolclass=NullPool,
+    connect_args=neon_connect_args(),
     echo=False,
 )
 
@@ -52,6 +41,7 @@ async def keepalive_ping() -> None:
             await conn.execute(text("SELECT 1"))
     except Exception:  # pragma: no cover - best-effort keepalive
         logger.debug("DB keepalive ping failed", exc_info=True)
+
 
 async_session_maker = async_sessionmaker(
     engine,

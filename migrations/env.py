@@ -7,7 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
-from app.core.config import get_settings
+from app.core.config import get_settings, neon_connect_args, neon_direct_url
 import app.models  # noqa: F401
 
 config = context.config
@@ -16,7 +16,8 @@ if config.config_file_name is not None:
 
 target_metadata = SQLModel.metadata
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Run migrations on Neon's direct endpoint so PgBouncer is not left with stale plans.
+config.set_main_option("sqlalchemy.url", neon_direct_url(settings.DATABASE_URL))
 
 
 def run_migrations_offline() -> None:
@@ -43,7 +44,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args={"ssl": "require"},
+        connect_args=neon_connect_args(),
     )
 
     async with connectable.connect() as connection:

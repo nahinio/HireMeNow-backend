@@ -5,6 +5,32 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def neon_connect_args() -> dict[str, object]:
+    """asyncpg connect args compatible with Neon pooler (PgBouncer)."""
+    return {
+        "ssl": "require",
+        "server_settings": {
+            "application_name": "hiremenow",
+            "search_path": "public",
+        },
+        # Required for Neon pooler; also disable asyncpg's own statement cache.
+        "prepared_statement_cache_size": 0,
+        "statement_cache_size": 0,
+    }
+
+
+def neon_direct_url(value: str) -> str:
+    """Route DDL/migrations through Neon's direct endpoint, not the pooler."""
+    parsed = urlparse(value)
+    hostname = parsed.hostname
+    if not hostname or "-pooler." not in hostname:
+        return value
+
+    direct_host = hostname.replace("-pooler.", ".", 1)
+    netloc = parsed.netloc.replace(hostname, direct_host, 1)
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
 def normalize_database_url(value: str) -> str:
     """Convert Neon/psycopg URLs to asyncpg and strip unsupported query params."""
     if value.startswith("postgresql://"):
@@ -16,6 +42,7 @@ def normalize_database_url(value: str) -> str:
     query = parse_qs(parsed.query, keep_blank_values=True)
     for key in ("sslmode", "channel_binding"):
         query.pop(key, None)
+    query.setdefault("prepared_statement_cache_size", ["0"])
 
     clean_query = urlencode(
         {key: values[0] for key, values in query.items() if values},
