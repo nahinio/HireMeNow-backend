@@ -24,6 +24,9 @@ engine = create_async_engine(
     connect_args={
         "ssl": "require",
         "server_settings": {"application_name": "hiremenow"},
+        # Neon pooler (PgBouncer) does not support prepared statements reliably;
+        # without this, schema changes or pooler routing cause InvalidCachedStatementError.
+        "prepared_statement_cache_size": 0,
     },
     echo=False,
 )
