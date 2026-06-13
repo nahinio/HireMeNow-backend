@@ -4,7 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -33,6 +33,9 @@ from app.schemas.admin import (
     AdminJobListResponse,
     AdminJobSummary,
     AdminStatsResponse,
+    AdminUserDeleteResponse,
+    AdminUserListResponse,
+    AdminUserSummary,
 )
 from app.schemas.job import ApplicantListResponse, JobResponse, build_applicant_response
 from app.schemas.report import (
@@ -68,6 +71,7 @@ from app.services.courses import (
     ensure_can_remove_course,
     ensure_skill_has_minimum_courses,
 )
+from app.services.profile import delete_user_for_report
 from app.services.reviews import recalculate_profile_ratings, update_profile_ratings_for_user
 from app.services.reports import resolve_user_report
 from app.schemas.upload import FileUploadResponse
@@ -580,6 +584,112 @@ async def delete_review(
         reviewee_id=review.reviewee_id,
         avg_rating=avg_rating,
         review_count=review_count,
+    )
+
+
+@router.get("/users", response_model=AdminUserListResponse)
+async def list_users(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    role: UserRole | None = None,
+    q: str | None = None,
+    include_deleted: bool = False,
+) -> AdminUserListResponse:
+    filters = [User.role.in_([UserRole.freelancer, UserRole.client])]
+    if not include_deleted:
+        filters.append(User.is_deleted.is_(False))
+    if role is not None:
+        filters.append(User.role == role)
+    if q:
+        pattern = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                User.email.ilike(pattern),
+                FreelancerProfile.display_name.ilike(pattern),
+                ClientProfile.company_name.ilike(pattern),
+            )
+        )
+
+    base = (
+        select(User, FreelancerProfile, ClientProfile)
+        .outerjoin(FreelancerProfile, FreelancerProfile.user_id == User.id)
+        .outerjoin(ClientProfile, ClientProfile.user_id == User.id)
+        .where(*filters)
+    )
+
+    total_result = await session.execute(
+        select(func.count()).select_from(base.subquery())
+    )
+    total = total_result.scalar_one()
+
+    result = await session.execute(
+        base.order_by(User.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+
+    items: list[AdminUserSummary] = []
+    for user, freelancer_profile, client_profile in result.all():
+        if user.role == UserRole.freelancer and freelancer_profile is not None:
+            display_name = freelancer_profile.display_name
+        elif user.role == UserRole.client and client_profile is not None:
+            display_name = client_profile.company_name or user.email
+        else:
+            display_name = user.email
+
+        items.append(
+            AdminUserSummary(
+                id=user.id,
+                email=user.email,
+                role=enum_to_str(user.role),
+                display_name=display_name,
+                is_banned=user.is_banned,
+                is_deleted=user.is_deleted,
+                ban_reason=user.ban_reason,
+                created_at=user.created_at,
+                deleted_at=user.deleted_at,
+            )
+        )
+
+    return AdminUserListResponse(items=items, page=page, limit=limit, total=total)
+
+
+@router.delete("/users/{user_id}", response_model=AdminUserDeleteResponse)
+async def delete_user(
+    user_id: UUID,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> AdminUserDeleteResponse:
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete your own account",
+        )
+
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if user.role == UserRole.admin:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Admin accounts cannot be deleted from moderation",
+        )
+
+    if user.role not in (UserRole.freelancer, UserRole.client):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only freelancer or client accounts can be deleted",
+        )
+
+    deleted_at = await delete_user_for_report(session, user)
+    return AdminUserDeleteResponse(
+        user_id=user.id,
+        role=enum_to_str(user.role),
+        deleted_at=deleted_at,
     )
 
 

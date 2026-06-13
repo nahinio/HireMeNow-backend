@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -5,6 +6,30 @@ from pydantic import BaseModel, Field
 from app.models.enums import JobStatus
 from app.schemas.job import ApplicantListResponse, JobListResponse, JobResponse
 
+
+class AdminUserSummary(BaseModel):
+    id: UUID
+    email: str
+    role: str
+    display_name: str
+    is_banned: bool
+    is_deleted: bool
+    ban_reason: str | None = None
+    created_at: datetime
+    deleted_at: datetime | None = None
+
+
+class AdminUserListResponse(BaseModel):
+    items: list[AdminUserSummary]
+    page: int
+    limit: int
+    total: int
+
+
+class AdminUserDeleteResponse(BaseModel):
+    user_id: UUID
+    role: str
+    deleted_at: datetime
 
 class AdminJobSummary(BaseModel):
     job: JobResponse
