@@ -34,8 +34,11 @@ class Message(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     conversation_id: uuid.UUID = Field(foreign_key="conversations.id", nullable=False)
-    sender_id: uuid.UUID = Field(foreign_key="users.id", nullable=False)
+    sender_id: uuid.UUID | None = Field(
+        default=None, foreign_key="users.id", nullable=True
+    )
     body: str = Field(sa_column=Column(Text, nullable=False))
+    is_system: bool = Field(default=False)
     is_read: bool = Field(default=False)
     sent_at: datetime = Field(
         default_factory=utcnow, sa_column=Column(timestamptz, nullable=False)

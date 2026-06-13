@@ -69,6 +69,23 @@ def decode_access_token(token: str) -> dict:
         ) from exc
 
 
+def decode_token_subject(token: str) -> UUID | None:
+    """Decode JWT subject for WebSockets without raising HTTPException."""
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+    except jwt.PyJWTError:
+        return None
+    sub = payload.get("sub")
+    if sub is None:
+        return None
+    try:
+        return UUID(sub)
+    except (TypeError, ValueError):
+        return None
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: Annotated[AsyncSession, Depends(get_async_session)],

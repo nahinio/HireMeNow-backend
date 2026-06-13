@@ -70,6 +70,7 @@ class JobResponse(BaseModel):
     posted_at: datetime
     updated_at: datetime
     required_skills: list[SkillResponse] = Field(default_factory=list)
+    viewer_has_applied: bool = False
 
     model_config = {"from_attributes": True}
 

@@ -34,6 +34,9 @@ class UserResponse(BaseModel):
     is_banned: bool
     created_at: datetime
     updated_at: datetime
+    display_name: str | None = None
+    profile_picture_url: str | None = None
+    company_name: str | None = None
 
     model_config = {"from_attributes": True}
 

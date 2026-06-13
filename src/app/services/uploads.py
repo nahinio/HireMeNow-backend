@@ -13,7 +13,21 @@ ALLOWED_IMAGE_CONTENT_TYPES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
-ALLOWED_RESUME_CONTENT_TYPES = {"application/pdf": ".pdf"}
+ALLOWED_RESUME_CONTENT_TYPES = {
+    "application/pdf": ".pdf",
+    "application/x-pdf": ".pdf",
+    "application/octet-stream": ".pdf",
+}
+
+
+def _is_pdf_upload(file: UploadFile, content: bytes) -> bool:
+    filename = (getattr(file, "filename", None) or "").lower()
+    if file.content_type in ALLOWED_RESUME_CONTENT_TYPES:
+        if file.content_type == "application/octet-stream":
+            if not filename.endswith(".pdf") and not content.startswith(b"%PDF"):
+                return False
+        return True
+    return filename.endswith(".pdf") or content.startswith(b"%PDF")
 
 
 def get_upload_root() -> Path:
@@ -157,13 +171,13 @@ async def save_resume_upload(
     owner_id: uuid.UUID,
 ) -> str:
     settings = get_settings()
-    if file.content_type not in ALLOWED_RESUME_CONTENT_TYPES:
+    content = await file.read()
+    if not _is_pdf_upload(file, content):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Resume must be a PDF file",
         )
 
-    content = await file.read()
     _validate_size(content, settings.MAX_RESUME_SIZE_BYTES, "Resume")
 
     if settings.cloudinary_is_configured():
@@ -173,7 +187,7 @@ async def save_resume_upload(
             resource_type="raw",
         )
 
-    extension = ALLOWED_RESUME_CONTENT_TYPES[file.content_type]
+    extension = ".pdf"
     filename = f"{uuid.uuid4()}{extension}"
     relative = f"freelancers/{owner_id}/resume/{filename}"
     destination = get_upload_root() / relative

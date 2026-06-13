@@ -22,6 +22,10 @@ class ConversationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ConversationListItem(ConversationResponse):
+    job_title: str
+
+
 class MessageCreate(BaseModel):
     body: str
 
@@ -29,8 +33,9 @@ class MessageCreate(BaseModel):
 class MessageResponse(BaseModel):
     id: UUID
     conversation_id: UUID
-    sender_id: UUID
+    sender_id: UUID | None
     body: str
+    is_system: bool
     is_read: bool
     sent_at: datetime
 

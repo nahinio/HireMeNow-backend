@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.models.enums import ReportStatus
+from app.schemas.freelancer import PortfolioLinkResponse
 from app.schemas.skill import SkillResponse
 
 
@@ -49,13 +50,17 @@ class FreelancerPublicResponse(BaseModel):
     display_name: str
     bio: str
     profile_picture_url: str | None = None
+    contact_email: str | None = None
+    resume_url: str | None = None
     linkedin_url: str | None = None
     github_url: str | None = None
     portfolio_url: str | None = None
     avg_rating: Decimal
     review_count: int
     availability_status: str
+    updated_at: datetime | None = None
     skills: list[SkillResponse] = Field(default_factory=list)
+    portfolio_links: list[PortfolioLinkResponse] = Field(default_factory=list)
 
 
 class FreelancerPublicListResponse(BaseModel):

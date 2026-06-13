@@ -6,7 +6,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import async_session_maker
+from app.db.engine import async_session_maker, keepalive_ping
 from app.models.enums import ApplicationStatus, JobStatus
 from app.models.job import Application, Job
 from app.models.messaging import CompletionSignal
@@ -163,6 +163,8 @@ async def force_close_stale_jobs() -> None:
 def start_scheduler() -> None:
     scheduler.add_job(send_review_reminders, "interval", hours=1, id="review_reminders")
     scheduler.add_job(force_close_stale_jobs, "interval", hours=1, id="force_closure")
+    # Keep the serverless DB warm so user requests avoid multi-second cold starts.
+    scheduler.add_job(keepalive_ping, "interval", minutes=3, id="db_keepalive")
     scheduler.start()
 
 

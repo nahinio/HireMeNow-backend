@@ -29,6 +29,28 @@ from app.utils.enums import enum_to_str
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+async def _user_response(session: AsyncSession, user: User) -> UserResponse:
+    data = UserResponse.model_validate(user).model_dump()
+    if user.role == UserRole.freelancer:
+        result = await session.execute(
+            select(FreelancerProfile).where(FreelancerProfile.user_id == user.id)
+        )
+        profile = result.scalar_one_or_none()
+        if profile is not None:
+            data["display_name"] = profile.display_name
+            data["profile_picture_url"] = profile.profile_picture_url
+    elif user.role == UserRole.client:
+        result = await session.execute(
+            select(ClientProfile).where(ClientProfile.user_id == user.id)
+        )
+        profile = result.scalar_one_or_none()
+        if profile is not None:
+            data["company_name"] = profile.company_name
+            data["display_name"] = profile.company_name
+            data["profile_picture_url"] = profile.profile_picture_url
+    return UserResponse(**data)
+
+
 def _issue_token(user: User) -> TokenResponse:
     token = create_access_token({"sub": str(user.id), "role": enum_to_str(user.role)})
     return TokenResponse(access_token=token)
@@ -167,5 +189,8 @@ async def reset_password(
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(current_user: Annotated[User, Depends(get_current_user)]) -> User:
-    return current_user
+async def me(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> UserResponse:
+    return await _user_response(session, current_user)

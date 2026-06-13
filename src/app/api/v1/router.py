@@ -9,6 +9,7 @@ from app.api.v1 import (
     freelancers,
     jobs,
     quizzes,
+    realtime,
     reports,
     reviews,
     courses,
@@ -26,5 +27,6 @@ api_router.include_router(skills.router)
 api_router.include_router(courses.router)
 api_router.include_router(jobs.router)
 api_router.include_router(conversations.router)
+api_router.include_router(realtime.router)
 api_router.include_router(reviews.router)
 api_router.include_router(reports.router)

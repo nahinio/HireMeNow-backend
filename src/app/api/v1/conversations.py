@@ -1,122 +1,101 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user, require_client
 from app.db.engine import get_async_session
-from app.models.enums import ApplicationStatus, ConversationPhase
-from app.models.job import Application, Job
-from app.models.messaging import CompletionSignal, Conversation, Message
-from app.models.user import FreelancerProfile, User
+from app.models.job import Job
+from app.models.messaging import Conversation, Message
+from app.models.user import User
 from app.schemas.messaging import (
     ConversationInitiateRequest,
-    ConversationResponse,
+    ConversationListItem,
     MessageCreate,
     MessageResponse,
+)
+from app.services.chat_events import notify_message_new, notify_messages_read
+from app.services.conversation_access import (
+    ensure_conversation_active,
+    get_conversation_or_404,
+    verify_conversation_party,
 )
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
-async def _get_conversation(
-    session: AsyncSession, conversation_id: UUID
-) -> Conversation:
+@router.get("", response_model=list[ConversationListItem])
+async def list_conversations(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> list[ConversationListItem]:
     result = await session.execute(
-        select(Conversation).where(Conversation.id == conversation_id)
+        select(Conversation, Job.title)
+        .join(Job, Conversation.job_id == Job.id)
+        .where(
+            or_(
+                Conversation.client_id == current_user.id,
+                Conversation.freelancer_id == current_user.id,
+            )
+        )
+        .order_by(Conversation.created_at.desc())
     )
-    conversation = result.scalar_one_or_none()
-    if conversation is None:
+    return [
+        ConversationListItem(
+            id=conversation.id,
+            client_id=conversation.client_id,
+            freelancer_id=conversation.freelancer_id,
+            job_id=conversation.job_id,
+            phase=conversation.phase,
+            created_at=conversation.created_at,
+            job_title=job_title,
+        )
+        for conversation, job_title in result.all()
+    ]
+
+
+@router.get("/{conversation_id}", response_model=ConversationListItem)
+async def get_conversation(
+    conversation_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> ConversationListItem:
+    result = await session.execute(
+        select(Conversation, Job.title)
+        .join(Job, Conversation.job_id == Job.id)
+        .where(Conversation.id == conversation_id)
+    )
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found",
         )
-    return conversation
-
-
-def _verify_conversation_party(conversation: Conversation, user: User) -> None:
-    if user.id not in (conversation.client_id, conversation.freelancer_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not a party to this conversation",
-        )
-
-
-async def _check_conversation_locked(
-    session: AsyncSession, conversation: Conversation
-) -> None:
-    if conversation.phase == ConversationPhase.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Conversation is locked.",
-        )
-
-    signal_result = await session.execute(
-        select(CompletionSignal.id)
-        .where(CompletionSignal.job_id == conversation.job_id)
-        .limit(1)
+    conversation, job_title = row
+    verify_conversation_party(conversation, current_user)
+    return ConversationListItem(
+        id=conversation.id,
+        client_id=conversation.client_id,
+        freelancer_id=conversation.freelancer_id,
+        job_id=conversation.job_id,
+        phase=conversation.phase,
+        created_at=conversation.created_at,
+        job_title=job_title,
     )
-    if signal_result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Conversation is locked.",
-        )
 
 
-@router.post("/initiate", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/initiate", status_code=status.HTTP_403_FORBIDDEN)
 async def initiate_conversation(
     payload: ConversationInitiateRequest,
     current_user: Annotated[User, Depends(require_client)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
-) -> Conversation:
-    job_result = await session.execute(select(Job).where(Job.id == payload.job_id))
-    job = job_result.scalar_one_or_none()
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    if job.client_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the job owner can initiate conversations",
-        )
-
-    application_result = await session.execute(
-        select(Application)
-        .join(FreelancerProfile, Application.freelancer_id == FreelancerProfile.id)
-        .where(
-            Application.job_id == payload.job_id,
-            FreelancerProfile.user_id == payload.freelancer_id,
-            Application.status == ApplicationStatus.accepted,
-        )
+) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Conversations are created automatically when you hire a freelancer",
     )
-    if application_result.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Select an applicant before starting a conversation",
-        )
-
-    existing_result = await session.execute(
-        select(Conversation).where(
-            Conversation.job_id == payload.job_id,
-            Conversation.freelancer_id == payload.freelancer_id,
-        )
-    )
-    if existing_result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conversation already exists",
-        )
-
-    conversation = Conversation(
-        client_id=current_user.id,
-        freelancer_id=payload.freelancer_id,
-        job_id=payload.job_id,
-    )
-    session.add(conversation)
-    await session.flush()
-    await session.refresh(conversation)
-    return conversation
 
 
 @router.post(
@@ -127,32 +106,46 @@ async def initiate_conversation(
 async def send_message(
     conversation_id: UUID,
     payload: MessageCreate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> Message:
-    conversation = await _get_conversation(session, conversation_id)
-    _verify_conversation_party(conversation, current_user)
-    await _check_conversation_locked(session, conversation)
+    conversation = await get_conversation_or_404(session, conversation_id)
+    verify_conversation_party(conversation, current_user)
+    await ensure_conversation_active(session, conversation)
+
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message body cannot be empty",
+        )
 
     message = Message(
         conversation_id=conversation_id,
         sender_id=current_user.id,
-        body=payload.body,
+        body=body,
     )
     session.add(message)
     await session.flush()
     await session.refresh(message)
+    await notify_message_new(
+        request.app,
+        message=message,
+        conversation=conversation,
+    )
     return message
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
 async def get_messages(
     conversation_id: UUID,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> list[Message]:
-    conversation = await _get_conversation(session, conversation_id)
-    _verify_conversation_party(conversation, current_user)
+    conversation = await get_conversation_or_404(session, conversation_id)
+    verify_conversation_party(conversation, current_user)
 
     result = await session.execute(
         select(Message)
@@ -161,14 +154,24 @@ async def get_messages(
     )
     messages = result.scalars().all()
 
-    await session.execute(
-        update(Message)
-        .where(
-            Message.conversation_id == conversation_id,
-            Message.sender_id != current_user.id,
-            Message.is_read.is_(False),
+    unread_ids = [
+        message.id
+        for message in messages
+        if not message.is_read
+        and message.sender_id is not None
+        and message.sender_id != current_user.id
+    ]
+    if unread_ids:
+        await session.execute(
+            update(Message)
+            .where(Message.id.in_(unread_ids))
+            .values(is_read=True)
         )
-        .values(is_read=True)
-    )
+        await notify_messages_read(
+            request.app,
+            conversation=conversation,
+            reader_id=current_user.id,
+            message_ids=unread_ids,
+        )
 
     return messages

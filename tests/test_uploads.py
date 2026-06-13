@@ -123,6 +123,23 @@ async def test_save_resume_upload_uses_cloudinary_raw_when_configured():
 
 
 @pytest.mark.asyncio
+async def test_save_resume_upload_accepts_octet_stream_pdf(tmp_path):
+    file = MockUploadFile(b"%PDF-1.4", "application/octet-stream")
+    file.filename = "resume.pdf"
+    owner_id = uuid.uuid4()
+
+    with (
+        patch("app.services.uploads.get_settings") as mock_settings,
+        patch("app.services.uploads.get_upload_root", return_value=tmp_path),
+    ):
+        mock_settings.return_value.cloudinary_is_configured.return_value = False
+        mock_settings.return_value.MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024
+        url = await save_resume_upload(file, owner_id=owner_id)
+
+    assert url.endswith(".pdf")
+
+
+@pytest.mark.asyncio
 async def test_save_resume_upload_rejects_non_pdf():
     file = MockUploadFile(b"not pdf", "image/png")
     with pytest.raises(HTTPException) as exc:

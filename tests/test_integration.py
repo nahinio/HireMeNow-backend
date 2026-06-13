@@ -228,7 +228,7 @@ async def test_freelancer_cannot_initiate_conversation(client: AsyncClient):
         headers={"Authorization": f"Bearer {client_token}"},
         json={"job_id": job_id, "freelancer_id": freelancer_user_id},
     )
-    assert blocked.status_code == 422
+    assert blocked.status_code == 403
 
 
 @pytest.mark.asyncio

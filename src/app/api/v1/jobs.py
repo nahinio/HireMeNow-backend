@@ -3,14 +3,14 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.security import get_current_user, get_optional_current_user, require_client, require_freelancer
-from app.db.engine import get_async_session
-from app.models.enums import ApplicationStatus, ConversationPhase, JobStatus
+from app.db.engine import async_session_maker, get_async_session
+from app.models.enums import ApplicationStatus, ConversationPhase, JobStatus, UserRole
 from app.models.job import Application, Job, JobRequiredSkill
 from app.models.messaging import CompletionSignal, Conversation
 from app.models.skill import Skill, SkillBadge
@@ -29,9 +29,11 @@ from app.schemas.job import (
 from app.schemas.skill import SkillResponse
 from app.schemas.upload import FileUploadResponse
 from app.services.applications import select_applicant_for_job
+from app.services.chat_events import notify_conversation_created, notify_conversation_locked
 from app.services.uploads import delete_upload_if_local, save_image_upload
 from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
+from app.utils.response_cache import get_cached, invalidate_prefix, set_cached
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -48,8 +50,29 @@ async def _get_job_required_skills(
     return [SkillResponse.model_validate(skill) for skill in skills]
 
 
-async def _build_job_response(session: AsyncSession, job: Job) -> JobResponse:
-    required_skills = await _get_job_required_skills(session, job.id)
+async def _bulk_get_job_required_skills(
+    session: AsyncSession, job_ids: list[UUID]
+) -> dict[UUID, list[SkillResponse]]:
+    if not job_ids:
+        return {}
+    result = await session.execute(
+        select(JobRequiredSkill.job_id, Skill)
+        .join(Skill, JobRequiredSkill.skill_id == Skill.id)
+        .where(JobRequiredSkill.job_id.in_(job_ids))
+        .order_by(Skill.name.asc())
+    )
+    skills_by_job: dict[UUID, list[SkillResponse]] = {job_id: [] for job_id in job_ids}
+    for job_id, skill in result.all():
+        skills_by_job[job_id].append(SkillResponse.model_validate(skill))
+    return skills_by_job
+
+
+def _job_to_response(
+    job: Job,
+    required_skills: list[SkillResponse],
+    *,
+    viewer_has_applied: bool = False,
+) -> JobResponse:
     return JobResponse(
         id=job.id,
         client_id=job.client_id,
@@ -73,7 +96,38 @@ async def _build_job_response(session: AsyncSession, job: Job) -> JobResponse:
         posted_at=job.posted_at,
         updated_at=job.updated_at,
         required_skills=required_skills,
+        viewer_has_applied=viewer_has_applied,
     )
+
+
+async def _build_job_response(
+    session: AsyncSession,
+    job: Job,
+    current_user: User | None = None,
+) -> JobResponse:
+    required_skills = await _get_job_required_skills(session, job.id)
+    viewer_has_applied = False
+    if current_user is not None and current_user.role == UserRole.freelancer:
+        profile_result = await session.execute(
+            select(FreelancerProfile.id).where(FreelancerProfile.user_id == current_user.id)
+        )
+        profile_id = profile_result.scalar_one_or_none()
+        if profile_id is not None:
+            applied_result = await session.execute(
+                select(Application.id).where(
+                    Application.freelancer_id == profile_id,
+                    Application.job_id == job.id,
+                )
+            )
+            viewer_has_applied = applied_result.scalar_one_or_none() is not None
+    return _job_to_response(job, required_skills, viewer_has_applied=viewer_has_applied)
+
+
+async def _build_job_list_responses(
+    session: AsyncSession, jobs: list[Job]
+) -> list[JobResponse]:
+    skills_by_job = await _bulk_get_job_required_skills(session, [job.id for job in jobs])
+    return [_job_to_response(job, skills_by_job.get(job.id, [])) for job in jobs]
 
 
 async def _get_freelancer_profile(
@@ -194,12 +248,12 @@ async def create_job(
     for skill_id in payload.required_skill_ids:
         session.add(JobRequiredSkill(job_id=job.id, skill_id=skill_id))
 
+    invalidate_prefix("jobs:list:")
     return await _build_job_response(session, job)
 
 
 @router.get("", response_model=JobListResponse)
 async def list_jobs(
-    session: Annotated[AsyncSession, Depends(get_async_session)],
     q: str | None = Query(default=None, description="Search job title"),
     skill_id: UUID | None = Query(default=None),
     company_name: str | None = Query(default=None),
@@ -209,62 +263,71 @@ async def list_jobs(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> JobListResponse:
-    query = (
-        select(Job)
-        .join(User, Job.client_id == User.id)
-        .where(
-            User.is_deleted.is_(False),
-            User.is_banned.is_(False),
-        )
+    cache_key = (
+        f"jobs:list:{q}:{skill_id}:{company_name}:{status_filter}:"
+        f"{min_salary}:{max_salary}:{page}:{limit}"
     )
-    count_query = (
-        select(func.count())
-        .select_from(Job)
-        .join(User, Job.client_id == User.id)
-        .where(
-            User.is_deleted.is_(False),
-            User.is_banned.is_(False),
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    async with async_session_maker() as session:
+        query = (
+            select(Job)
+            .join(User, Job.client_id == User.id)
+            .where(
+                User.is_deleted.is_(False),
+                User.is_banned.is_(False),
+            )
         )
-    )
-
-    if status_filter is not None:
-        query = query.where(Job.status == status_filter)
-        count_query = count_query.where(Job.status == status_filter)
-
-    if q:
-        pattern = f"%{q.strip()}%"
-        query = query.where(Job.title.ilike(pattern))
-        count_query = count_query.where(Job.title.ilike(pattern))
-    if company_name:
-        pattern = f"%{company_name.strip()}%"
-        query = query.where(Job.company_name.ilike(pattern))
-        count_query = count_query.where(Job.company_name.ilike(pattern))
-    if skill_id is not None:
-        query = query.join(JobRequiredSkill).where(JobRequiredSkill.skill_id == skill_id)
-        count_query = count_query.join(JobRequiredSkill).where(
-            JobRequiredSkill.skill_id == skill_id
+        count_query = (
+            select(func.count())
+            .select_from(Job)
+            .join(User, Job.client_id == User.id)
+            .where(
+                User.is_deleted.is_(False),
+                User.is_banned.is_(False),
+            )
         )
-    if min_salary is not None:
-        salary_clause = (Job.salary_negotiable.is_(True)) | (Job.salary_amount >= min_salary)
-        query = query.where(salary_clause)
-        count_query = count_query.where(salary_clause)
-    if max_salary is not None:
-        salary_clause = Job.salary_negotiable.is_(True) | (
-            Job.salary_amount.is_not(None) & (Job.salary_amount <= max_salary)
+
+        if status_filter is not None:
+            query = query.where(Job.status == status_filter)
+            count_query = count_query.where(Job.status == status_filter)
+
+        if q:
+            pattern = f"%{q.strip()}%"
+            query = query.where(Job.title.ilike(pattern))
+            count_query = count_query.where(Job.title.ilike(pattern))
+        if company_name:
+            pattern = f"%{company_name.strip()}%"
+            query = query.where(Job.company_name.ilike(pattern))
+            count_query = count_query.where(Job.company_name.ilike(pattern))
+        if skill_id is not None:
+            query = query.join(JobRequiredSkill).where(JobRequiredSkill.skill_id == skill_id)
+            count_query = count_query.join(JobRequiredSkill).where(
+                JobRequiredSkill.skill_id == skill_id
+            )
+        if min_salary is not None:
+            salary_clause = (Job.salary_negotiable.is_(True)) | (Job.salary_amount >= min_salary)
+            query = query.where(salary_clause)
+            count_query = count_query.where(salary_clause)
+        if max_salary is not None:
+            salary_clause = Job.salary_negotiable.is_(True) | (
+                Job.salary_amount.is_not(None) & (Job.salary_amount <= max_salary)
+            )
+            query = query.where(salary_clause)
+            count_query = count_query.where(salary_clause)
+
+        total = int((await session.execute(count_query)).scalar_one())
+
+        result = await session.execute(
+            query.order_by(Job.posted_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
         )
-        query = query.where(salary_clause)
-        count_query = count_query.where(salary_clause)
-
-    total = int((await session.execute(count_query)).scalar_one())
-
-    result = await session.execute(
-        query.order_by(Job.posted_at.desc())
-        .offset((page - 1) * limit)
-        .limit(limit)
-    )
-    jobs = result.scalars().unique().all()
-    items = [await _build_job_response(session, job) for job in jobs]
-    return JobListResponse(items=items, page=page, limit=limit, total=total)
+        jobs = result.scalars().unique().all()
+        items = await _build_job_list_responses(session, jobs)
+        return set_cached(cache_key, JobListResponse(items=items, page=page, limit=limit, total=total))
 
 
 @router.get("/mine", response_model=JobListResponse)
@@ -291,7 +354,7 @@ async def list_my_jobs(
         .limit(limit)
     )
     jobs = result.scalars().all()
-    items = [await _build_job_response(session, job) for job in jobs]
+    items = await _build_job_list_responses(session, jobs)
     return JobListResponse(items=items, page=page, limit=limit, total=total)
 
 
@@ -320,7 +383,7 @@ async def get_job(
     job = result.scalar_one_or_none()
     if job is None or not await _can_view_job(session, job, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return await _build_job_response(session, job)
+    return await _build_job_response(session, job, current_user)
 
 
 @router.post("/{job_id}/thumbnail", response_model=FileUploadResponse)
@@ -368,13 +431,28 @@ async def apply_to_job(
 
     profile = await _get_freelancer_profile(session, current_user.id)
 
+    existing_result = await session.execute(
+        select(Application.id).where(
+            Application.freelancer_id == profile.id,
+            Application.job_id == job_id,
+        )
+    )
+    if existing_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Already applied to this job",
+        )
+
     required_result = await session.execute(
         select(JobRequiredSkill.skill_id).where(JobRequiredSkill.job_id == job_id)
     )
     required_skill_ids = set(required_result.scalars().all())
 
     badges_result = await session.execute(
-        select(SkillBadge).where(SkillBadge.profile_id == profile.id)
+        select(SkillBadge).where(
+            SkillBadge.profile_id == profile.id,
+            SkillBadge.skill_id.in_(required_skill_ids),
+        )
     )
     badges = badges_result.scalars().all()
     badge_skill_ids = {badge.skill_id for badge in badges}
@@ -393,19 +471,7 @@ async def apply_to_job(
             },
         )
 
-    existing_result = await session.execute(
-        select(Application).where(
-            Application.freelancer_id == profile.id,
-            Application.job_id == job_id,
-        )
-    )
-    if existing_result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Already applied to this job",
-        )
-
-    relevant_badges = [badge for badge in badges if badge.skill_id in required_skill_ids]
+    relevant_badges = badges
     quiz_score_snapshot = max((badge.score for badge in relevant_badges), default=Decimal("0"))
 
     application = Application(
@@ -423,6 +489,7 @@ async def apply_to_job(
 async def select_applicant(
     job_id: UUID,
     payload: SelectApplicantRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_client)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> SelectApplicantResponse:
@@ -436,6 +503,12 @@ async def select_applicant(
         job=job,
         client=current_user,
         application_id=payload.application_id,
+    )
+    await notify_conversation_created(
+        request.app,
+        conversation=conversation,
+        message=message,
+        job_title=job.title,
     )
     return SelectApplicantResponse(
         application_id=application.id,
@@ -505,6 +578,7 @@ async def list_applicants(
 @router.post("/{job_id}/complete", status_code=status.HTTP_200_OK)
 async def signal_completion(
     job_id: UUID,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> dict[str, str]:
@@ -556,5 +630,9 @@ async def signal_completion(
         for conversation in conversations_result.scalars().all():
             conversation.phase = ConversationPhase.is_locked
             session.add(conversation)
+            await notify_conversation_locked(
+                request.app,
+                conversation=conversation,
+            )
 
     return {"status": "completion signalled"}

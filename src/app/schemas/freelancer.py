@@ -34,6 +34,7 @@ class FreelancerProfileResponse(BaseModel):
     review_count: int
     updated_at: datetime
     available_for_work: bool = Field(exclude=True)
+    portfolio_links: list["PortfolioLinkResponse"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -44,9 +45,15 @@ class FreelancerProfileResponse(BaseModel):
 
 
 class PortfolioLinkCreate(BaseModel):
-    label: str
-    url: str
-    position: int
+    label: str = Field(min_length=1, max_length=120)
+    url: str = Field(min_length=1, max_length=500)
+    position: int = Field(ge=1)
+
+
+class PortfolioLinkUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    url: str | None = Field(default=None, min_length=1, max_length=500)
+    position: int | None = Field(default=None, ge=1)
 
 
 class PortfolioLinkResponse(BaseModel):
@@ -57,3 +64,6 @@ class PortfolioLinkResponse(BaseModel):
     position: int
 
     model_config = {"from_attributes": True}
+
+
+FreelancerProfileResponse.model_rebuild()

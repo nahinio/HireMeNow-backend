@@ -28,7 +28,12 @@ from app.models.user import (
     User,
 )
 from app.schemas.course import CourseCreate, CourseListResponse, CourseResponse, CourseUpdate
-from app.schemas.admin import AdminJobApplicantsResponse, AdminJobListResponse, AdminJobSummary
+from app.schemas.admin import (
+    AdminJobApplicantsResponse,
+    AdminJobListResponse,
+    AdminJobSummary,
+    AdminStatsResponse,
+)
 from app.schemas.job import ApplicantListResponse, JobResponse, build_applicant_response
 from app.schemas.report import (
     UserReportListResponse,
@@ -42,6 +47,8 @@ from app.schemas.review import (
     ReviewDeleteResponse,
 )
 from app.schemas.skill import (
+    AdminSkillDetailResponse,
+    AdminSkillListResponse,
     AnswerOptionCreate,
     AnswerOptionResponse,
     QuestionCreate,
@@ -50,10 +57,13 @@ from app.schemas.skill import (
     QuizResponse,
     QuizUpdate,
     SkillCreate,
+    SkillQuizReplace,
     SkillResponse,
+    SkillUpdate,
     SkillWithQuizCreate,
     SkillWithQuizResponse,
 )
+from app.services.admin_stats import get_admin_stats
 from app.services.courses import (
     ensure_can_remove_course,
     ensure_skill_has_minimum_courses,
@@ -61,12 +71,28 @@ from app.services.courses import (
 from app.services.reviews import recalculate_profile_ratings, update_profile_ratings_for_user
 from app.services.reports import resolve_user_report
 from app.schemas.upload import FileUploadResponse
-from app.services.skills import create_skill_with_quiz
+from app.services.skills import (
+    create_skill_with_quiz,
+    delete_skill,
+    get_skill_detail_admin,
+    get_skill_with_quiz,
+    list_admin_skills,
+    replace_skill_quiz,
+    update_skill,
+)
 from app.services.uploads import delete_upload_if_local, save_image_upload
 from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/stats", response_model=AdminStatsResponse)
+async def admin_stats(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> AdminStatsResponse:
+    return await get_admin_stats(session)
 
 
 async def _build_admin_job_response(session: AsyncSession, job: Job) -> JobResponse:
@@ -190,6 +216,54 @@ async def create_skill_with_quiz_endpoint(
         payload=payload,
         created_by=current_user.id,
     )
+
+
+@router.get("/skills", response_model=AdminSkillListResponse)
+async def list_skills_admin(
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> AdminSkillListResponse:
+    return await list_admin_skills(session, page=page, limit=limit)
+
+
+@router.get("/skills/{skill_id}", response_model=AdminSkillDetailResponse)
+async def get_skill_admin(
+    skill_id: UUID,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> AdminSkillDetailResponse:
+    return await get_skill_detail_admin(session, skill_id)
+
+
+@router.patch("/skills/{skill_id}", response_model=SkillResponse)
+async def update_skill_admin(
+    skill_id: UUID,
+    payload: SkillUpdate,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> SkillResponse:
+    return await update_skill(session, skill_id, payload)
+
+
+@router.put("/skills/{skill_id}/quiz", response_model=SkillWithQuizResponse)
+async def replace_skill_quiz_admin(
+    skill_id: UUID,
+    payload: SkillQuizReplace,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> SkillWithQuizResponse:
+    return await replace_skill_quiz(session, skill_id, payload)
+
+
+@router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_skill_admin(
+    skill_id: UUID,
+    current_user: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> None:
+    await delete_skill(session, skill_id)
 
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=status.HTTP_201_CREATED)

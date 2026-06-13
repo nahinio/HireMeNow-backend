@@ -23,3 +23,18 @@ class AdminJobListResponse(BaseModel):
 class AdminJobApplicantsResponse(BaseModel):
     job_id: UUID
     applicants: ApplicantListResponse
+
+
+class AdminStatsResponse(BaseModel):
+    pending_reports: int = 0
+    total_jobs: int = 0
+    open_jobs: int = 0
+    filled_jobs: int = 0
+    pending_confirmation_jobs: int = 0
+    completed_jobs: int = 0
+    closed_jobs: int = 0
+    total_courses: int = 0
+    total_freelancers: int = 0
+    total_skills: int = 0
+    total_applications: int = 0
+    pending_applications: int = 0

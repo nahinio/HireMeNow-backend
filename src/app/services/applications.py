@@ -16,6 +16,34 @@ SELECTION_MESSAGE = (
 )
 
 
+async def create_hire_conversation(
+    session: AsyncSession,
+    *,
+    job: Job,
+    client: User,
+    freelancer_user: User,
+) -> tuple[Conversation, Message]:
+    conversation = Conversation(
+        client_id=client.id,
+        freelancer_id=freelancer_user.id,
+        job_id=job.id,
+    )
+    session.add(conversation)
+    await session.flush()
+
+    message = Message(
+        conversation_id=conversation.id,
+        sender_id=None,
+        body=SELECTION_MESSAGE.format(title=job.title),
+        is_system=True,
+    )
+    session.add(message)
+    await session.flush()
+    await session.refresh(conversation)
+    await session.refresh(message)
+    return conversation, message
+
+
 async def select_applicant_for_job(
     session: AsyncSession,
     *,
@@ -101,20 +129,20 @@ async def select_applicant_for_job(
     )
     conversation = conversation_result.scalar_one_or_none()
     if conversation is None:
-        conversation = Conversation(
-            client_id=client.id,
-            freelancer_id=freelancer_user.id,
-            job_id=job.id,
+        conversation, message = await create_hire_conversation(
+            session,
+            job=job,
+            client=client,
+            freelancer_user=freelancer_user,
         )
-        session.add(conversation)
-        await session.flush()
-
-    message = Message(
-        conversation_id=conversation.id,
-        sender_id=client.id,
-        body=SELECTION_MESSAGE.format(title=job.title),
-    )
-    session.add(message)
+    else:
+        message_result = await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation.id)
+            .order_by(Message.sent_at.asc())
+            .limit(1)
+        )
+        message = message_result.scalar_one()
 
     job.status = JobStatus.filled
     job.updated_at = datetime.now(timezone.utc)
