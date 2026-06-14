@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import ConversationPhase
-from app.models.messaging import CompletionSignal, Conversation
+from app.models.messaging import Conversation
 from app.models.user import User
 
 
@@ -36,17 +36,6 @@ async def ensure_conversation_active(
     session: AsyncSession, conversation: Conversation
 ) -> None:
     if conversation.phase == ConversationPhase.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Conversation is locked.",
-        )
-
-    signal_result = await session.execute(
-        select(CompletionSignal.id)
-        .where(CompletionSignal.job_id == conversation.job_id)
-        .limit(1)
-    )
-    if signal_result.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Conversation is locked.",

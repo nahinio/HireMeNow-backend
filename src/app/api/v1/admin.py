@@ -87,6 +87,7 @@ from app.services.skills import (
 from app.services.uploads import delete_upload_if_local, save_image_upload
 from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
+from app.utils.response_cache import invalidate_job_listings, invalidate_skill_listings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -202,6 +203,7 @@ async def create_skill(
     session.add(skill)
     await session.flush()
     await session.refresh(skill)
+    invalidate_skill_listings()
     return skill
 
 
@@ -215,11 +217,13 @@ async def create_skill_with_quiz_endpoint(
     current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> SkillWithQuizResponse:
-    return await create_skill_with_quiz(
+    result = await create_skill_with_quiz(
         session,
         payload=payload,
         created_by=current_user.id,
     )
+    invalidate_skill_listings()
+    return result
 
 
 @router.get("/skills", response_model=AdminSkillListResponse)
@@ -248,7 +252,9 @@ async def update_skill_admin(
     current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> SkillResponse:
-    return await update_skill(session, skill_id, payload)
+    skill = await update_skill(session, skill_id, payload)
+    invalidate_skill_listings()
+    return skill
 
 
 @router.put("/skills/{skill_id}/quiz", response_model=SkillWithQuizResponse)
@@ -258,7 +264,9 @@ async def replace_skill_quiz_admin(
     current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> SkillWithQuizResponse:
-    return await replace_skill_quiz(session, skill_id, payload)
+    result = await replace_skill_quiz(session, skill_id, payload)
+    invalidate_skill_listings()
+    return result
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -268,6 +276,7 @@ async def delete_skill_admin(
     session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> None:
     await delete_skill(session, skill_id)
+    invalidate_skill_listings()
 
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=status.HTTP_201_CREATED)
@@ -300,6 +309,7 @@ async def create_quiz(
     )
     session.add(quiz)
     await session.flush()
+    invalidate_skill_listings()
     return QuizResponse(
         id=quiz.id,
         skill_id=quiz.skill_id,
@@ -333,6 +343,7 @@ async def update_quiz(
 
     session.add(quiz)
     await session.refresh(quiz)
+    invalidate_skill_listings()
     return QuizResponse(
         id=quiz.id,
         skill_id=quiz.skill_id,
@@ -378,6 +389,7 @@ async def create_course(
     session.add(course)
     await session.flush()
     await session.refresh(course)
+    invalidate_skill_listings()
     return CourseResponse(
         id=course.id,
         skill_id=course.skill_id,
@@ -464,6 +476,7 @@ async def update_course(
 
     session.add(course)
     await session.refresh(course)
+    invalidate_skill_listings()
     return CourseResponse(
         id=course.id,
         skill_id=course.skill_id,
@@ -492,6 +505,7 @@ async def delete_course(
 
     delete_upload_if_local(course.thumbnail_url)
     await session.delete(course)
+    invalidate_skill_listings()
 
 
 @router.post(
@@ -517,6 +531,7 @@ async def create_question(
     session.add(question)
     await session.flush()
     await session.refresh(question)
+    invalidate_skill_listings()
     return question
 
 
@@ -560,6 +575,7 @@ async def create_answer_option(
     session.add(option)
     await session.flush()
     await session.refresh(option)
+    invalidate_skill_listings()
     return option
 
 
@@ -686,6 +702,8 @@ async def delete_user(
         )
 
     deleted_at = await delete_user_for_report(session, user)
+    if user.role == UserRole.client:
+        invalidate_job_listings()
     return AdminUserDeleteResponse(
         user_id=user.id,
         role=enum_to_str(user.role),
@@ -755,6 +773,9 @@ async def ban_user(
         )
         applications_canceled = cancel_result.rowcount or 0
 
+    if user.role == UserRole.client and jobs_closed:
+        invalidate_job_listings()
+
     return BanResponse(
         user_id=user.id,
         role=enum_to_str(user.role),
@@ -802,6 +823,8 @@ async def resolve_report(
         admin=current_user,
         status=payload.status,
     )
+    if deleted_at is not None:
+        invalidate_job_listings()
     return UserReportResolveResponse(
         report=UserReportResponse.model_validate(report),
         reported_user_deleted_at=deleted_at,

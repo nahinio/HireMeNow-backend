@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     EXPOSE_PASSWORD_RESET_TOKEN: bool = False
     APP_NAME: str = "HireMeNow"
     PUBLIC_API_URL: str = "https://hiremenow-backend-faster.onrender.com"
-    FRONTEND_RESET_URL: str | None = "http://hiremenow.nahinio.xyz/"
+    FRONTEND_RESET_URL: str | None = "https://hiremenow.nahinio.xyz/"
     EMAIL_FROM: str | None = "HireMeNow <noreply@hiremenow.nahinio.xyz>"
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587

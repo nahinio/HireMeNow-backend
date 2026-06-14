@@ -13,6 +13,7 @@ from app.db.engine import async_session_maker, get_async_session
 from app.models.enums import ApplicationStatus, ConversationPhase, JobStatus, UserRole
 from app.models.job import Application, Job, JobRequiredSkill
 from app.models.messaging import CompletionSignal, Conversation
+from app.models.review import Review
 from app.models.skill import Skill, SkillBadge
 from app.models.user import FreelancerProfile, User
 from app.schemas.job import (
@@ -33,7 +34,7 @@ from app.services.chat_events import notify_conversation_created, notify_convers
 from app.services.uploads import delete_upload_if_local, save_image_upload
 from app.utils.applicant_ranking import compute_composite_score
 from app.utils.enums import enum_to_str
-from app.utils.response_cache import get_cached, invalidate_prefix, set_cached
+from app.utils.response_cache import get_cached, invalidate_job_listings, invalidate_prefix, set_cached
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -72,6 +73,10 @@ def _job_to_response(
     required_skills: list[SkillResponse],
     *,
     viewer_has_applied: bool = False,
+    viewer_is_hired: bool = False,
+    viewer_has_signalled_completion: bool = False,
+    viewer_has_submitted_review: bool = False,
+    viewer_can_submit_review: bool = False,
 ) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -97,6 +102,10 @@ def _job_to_response(
         updated_at=job.updated_at,
         required_skills=required_skills,
         viewer_has_applied=viewer_has_applied,
+        viewer_is_hired=viewer_is_hired,
+        viewer_has_signalled_completion=viewer_has_signalled_completion,
+        viewer_has_submitted_review=viewer_has_submitted_review,
+        viewer_can_submit_review=viewer_can_submit_review,
     )
 
 
@@ -107,6 +116,12 @@ async def _build_job_response(
 ) -> JobResponse:
     required_skills = await _get_job_required_skills(session, job.id)
     viewer_has_applied = False
+    viewer_is_hired = False
+    viewer_has_signalled_completion = False
+    viewer_has_submitted_review = False
+    viewer_can_submit_review = False
+    is_party = current_user is not None and str(job.client_id) == str(current_user.id)
+
     if current_user is not None and current_user.role == UserRole.freelancer:
         profile_result = await session.execute(
             select(FreelancerProfile.id).where(FreelancerProfile.user_id == current_user.id)
@@ -120,7 +135,48 @@ async def _build_job_response(
                 )
             )
             viewer_has_applied = applied_result.scalar_one_or_none() is not None
-    return _job_to_response(job, required_skills, viewer_has_applied=viewer_has_applied)
+            accepted_result = await session.execute(
+                select(Application.id).where(
+                    Application.freelancer_id == profile_id,
+                    Application.job_id == job.id,
+                    Application.status == ApplicationStatus.accepted,
+                )
+            )
+            viewer_is_hired = accepted_result.scalar_one_or_none() is not None
+            is_party = is_party or viewer_is_hired
+
+    if current_user is not None and is_party:
+        signal_result = await session.execute(
+            select(CompletionSignal.id).where(
+                CompletionSignal.job_id == job.id,
+                CompletionSignal.signalled_by == current_user.id,
+            )
+        )
+        viewer_has_signalled_completion = signal_result.scalar_one_or_none() is not None
+        review_result = await session.execute(
+            select(Review.id).where(
+                Review.job_id == job.id,
+                Review.reviewer_id == current_user.id,
+            )
+        )
+        viewer_has_submitted_review = review_result.scalar_one_or_none() is not None
+        if job.status == JobStatus.pending_confirmation and not viewer_has_submitted_review:
+            count_result = await session.execute(
+                select(func.count())
+                .select_from(CompletionSignal)
+                .where(CompletionSignal.job_id == job.id)
+            )
+            viewer_can_submit_review = int(count_result.scalar_one()) >= 2
+
+    return _job_to_response(
+        job,
+        required_skills,
+        viewer_has_applied=viewer_has_applied,
+        viewer_is_hired=viewer_is_hired,
+        viewer_has_signalled_completion=viewer_has_signalled_completion,
+        viewer_has_submitted_review=viewer_has_submitted_review,
+        viewer_can_submit_review=viewer_can_submit_review,
+    )
 
 
 async def _build_job_list_responses(
@@ -248,7 +304,7 @@ async def create_job(
     for skill_id in payload.required_skill_ids:
         session.add(JobRequiredSkill(job_id=job.id, skill_id=skill_id))
 
-    invalidate_prefix("jobs:list:")
+    invalidate_job_listings()
     return await _build_job_response(session, job)
 
 
@@ -330,6 +386,53 @@ async def list_jobs(
         return set_cached(cache_key, JobListResponse(items=items, page=page, limit=limit, total=total))
 
 
+@router.get("/engagements", response_model=JobListResponse)
+async def list_freelancer_engagements(
+    current_user: Annotated[User, Depends(require_freelancer)],
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    status_filter: JobStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JobListResponse:
+    profile = await _get_freelancer_profile(session, current_user.id)
+    query = (
+        select(Job)
+        .join(Application, Application.job_id == Job.id)
+        .where(
+            Application.freelancer_id == profile.id,
+            Application.status == ApplicationStatus.accepted,
+            Job.status != JobStatus.open,
+        )
+    )
+    count_query = (
+        select(func.count())
+        .select_from(Job)
+        .join(Application, Application.job_id == Job.id)
+        .where(
+            Application.freelancer_id == profile.id,
+            Application.status == ApplicationStatus.accepted,
+            Job.status != JobStatus.open,
+        )
+    )
+
+    if status_filter is not None:
+        query = query.where(Job.status == status_filter)
+        count_query = count_query.where(Job.status == status_filter)
+
+    total = int((await session.execute(count_query)).scalar_one())
+    result = await session.execute(
+        query.order_by(Job.updated_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    jobs = result.scalars().all()
+    items = [
+        await _build_job_response(session, job, current_user)
+        for job in jobs
+    ]
+    return JobListResponse(items=items, page=page, limit=limit, total=total)
+
+
 @router.get("/mine", response_model=JobListResponse)
 async def list_my_jobs(
     current_user: Annotated[User, Depends(require_client)],
@@ -354,7 +457,10 @@ async def list_my_jobs(
         .limit(limit)
     )
     jobs = result.scalars().all()
-    items = await _build_job_list_responses(session, jobs)
+    items = [
+        await _build_job_response(session, job, current_user)
+        for job in jobs
+    ]
     return JobListResponse(items=items, page=page, limit=limit, total=total)
 
 
@@ -510,6 +616,7 @@ async def select_applicant(
         message=message,
         job_title=job.title,
     )
+    invalidate_job_listings()
     return SelectApplicantResponse(
         application_id=application.id,
         status=application.status,
@@ -635,4 +742,5 @@ async def signal_completion(
                 conversation=conversation,
             )
 
+    invalidate_job_listings()
     return {"status": "completion signalled"}

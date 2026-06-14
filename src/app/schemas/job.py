@@ -71,6 +71,10 @@ class JobResponse(BaseModel):
     updated_at: datetime
     required_skills: list[SkillResponse] = Field(default_factory=list)
     viewer_has_applied: bool = False
+    viewer_is_hired: bool = False
+    viewer_has_signalled_completion: bool = False
+    viewer_has_submitted_review: bool = False
+    viewer_can_submit_review: bool = False
 
     model_config = {"from_attributes": True}
 

@@ -31,3 +31,11 @@ def invalidate_prefix(prefix: str) -> None:
     for key in list(_CACHE.keys()):
         if key.startswith(prefix):
             _CACHE.pop(key, None)
+
+
+def invalidate_job_listings() -> None:
+    invalidate_prefix("jobs:list:")
+
+
+def invalidate_skill_listings() -> None:
+    invalidate_prefix("skills:list:")

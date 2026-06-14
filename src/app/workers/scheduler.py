@@ -53,7 +53,10 @@ async def _get_job_party_user_ids(
     freelancer_result = await session.execute(
         select(FreelancerProfile.user_id)
         .join(Application, Application.freelancer_id == FreelancerProfile.id)
-        .where(Application.job_id == job_id)
+        .where(
+            Application.job_id == job_id,
+            Application.status == ApplicationStatus.accepted,
+        )
         .limit(1)
     )
     freelancer_id = freelancer_result.scalar_one()

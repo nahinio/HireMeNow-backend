@@ -3,17 +3,19 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.db.engine import get_async_session
 from app.models.enums import ApplicationStatus, JobStatus, UserRole
 from app.models.job import Application, Job
+from app.models.messaging import CompletionSignal
 from app.models.review import Review
 from app.models.user import FreelancerProfile, User
 from app.schemas.review import ReviewCreate, ReviewResponse
 from app.services.reviews import update_profile_ratings_for_user
+from app.utils.response_cache import invalidate_job_listings
 
 router = APIRouter(tags=["reviews"])
 
@@ -37,19 +39,20 @@ async def _get_job_parties(session: AsyncSession, job: Job) -> tuple[UUID, UUID]
     client_id = job.client_id
     freelancer_user_id = await _get_accepted_freelancer_user_id(session, job.id)
     if freelancer_user_id is None:
-        app_result = await session.execute(
-            select(FreelancerProfile.user_id)
-            .join(Application, Application.freelancer_id == FreelancerProfile.id)
-            .where(Application.job_id == job.id)
-            .limit(1)
-        )
-        freelancer_user_id = app_result.scalar_one_or_none()
-    if freelancer_user_id is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No freelancer associated with this job",
         )
     return client_id, freelancer_user_id
+
+
+async def _both_parties_signalled_completion(session: AsyncSession, job_id: UUID) -> bool:
+    count_result = await session.execute(
+        select(func.count())
+        .select_from(CompletionSignal)
+        .where(CompletionSignal.job_id == job_id)
+    )
+    return int(count_result.scalar_one()) >= 2
 
 
 @router.post("/jobs/{job_id}/review", response_model=ReviewResponse, status_code=status.HTTP_201_CREATED)
@@ -67,6 +70,11 @@ async def submit_review(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Reviews can only be submitted during pending_confirmation",
+        )
+    if not await _both_parties_signalled_completion(session, job_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Both parties must signal completion before reviewing",
         )
 
     client_id, freelancer_user_id = await _get_job_parties(session, job)
@@ -134,6 +142,7 @@ async def submit_review(
         job.status = JobStatus.completed
         job.updated_at = now
         session.add(job)
+        invalidate_job_listings()
 
     await session.refresh(review)
     return review
